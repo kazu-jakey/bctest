@@ -3,7 +3,7 @@
    ・2回目以降は保存したものから起動し、裏で新しい版を取りに行く
    ・書誌API（openBD）は保存しない。常に通信して、失敗したら手入力へ */
 
-const VERSION = 'yomunja-v3';
+const VERSION = 'yomunja-v4';
 const SHELL = [
   './',
   './index.html',

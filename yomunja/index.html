@@ -70,6 +70,9 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 .bk:active{transform:translateY(-4px)}
 .bk::after{content:"";position:absolute;inset:0 auto 0 0;width:6px;z-index:5;
   background:linear-gradient(90deg,rgba(0,0,0,.34),transparent)}
+.bk .ph.raw{filter:none;z-index:1}
+.bk.jk{box-shadow:0 7px 10px -6px rgba(40,25,15,.62)}
+.bk.jk::after{background:linear-gradient(90deg,rgba(0,0,0,.22),transparent)}
 .bk .ph{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;
   filter:saturate(.7) brightness(.72);z-index:1}
 .bk .veil{position:absolute;inset:0;z-index:2;background:linear-gradient(180deg,
@@ -296,6 +299,44 @@ async function lookupIsbn(isbn){
 }
 let scanned = null;
 
+
+
+/* ── 書影の取得 ─────────────────────── */
+/*  ISBN から画像の場所を組み立てて、実在するかを確かめる。
+    実測では 8冊中6冊（75%）取得できた。取れない本は生成カバーになる。
+    ※ 将来こうして公開する段階では、正規のAPI経由に切り替える。
+      取得手段はこの関数の中だけに閉じてあるので、差し替えは容易。   */
+function jacketUrl(isbn){
+  if (!isbn || isbn.length !== 13) return null;
+  return 'https://thumbnail.image.rakuten.co.jp/@0_mall/book/cabinet/'
+       + isbn.slice(-4) + '/' + isbn + '.jpg?_ex=400x400';
+}
+
+function imageExists(url){
+  return new Promise(res => {
+    if (!url) return res(false);
+    const im = new Image();
+    const to = setTimeout(() => { im.src = ''; res(false); }, 6000);
+    im.onload  = () => { clearTimeout(to); res(im.naturalWidth > 40); };
+    im.onerror = () => { clearTimeout(to); res(false); };
+    im.src = url;
+  });
+}
+
+/* 登録済みの本のうち、まだ書影を調べていないものを順に確かめる */
+async function fillJackets(){
+  const todo = db.books.filter(b => b.isbn && !b.jacket && !b.jacketTried);
+  if (!todo.length) return;
+  let got = 0;
+  for (const b of todo){
+    const u = jacketUrl(b.isbn);
+    b.jacketTried = true;
+    if (await imageExists(u)){ b.jacket = u; got++; }
+  }
+  await save();
+  render();
+  if (got) toast(got + '冊の表紙が見つかりました');
+}
 
 /* ── 表紙を撮る ─────────────────────── */
 /*  検証で決めた方式：
@@ -662,6 +703,7 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
   <div class="body">
     <div class="field"><label>これまで</label>
       <p class="empty" id="mStats"></p></div>
+    <button class="cta ghost" id="mRefetch" style="margin-bottom:9px">表紙をもう一度さがす</button>
     <button class="cta ghost" id="mExport" style="margin-bottom:9px">データを書き出す</button>
     <button class="cta ghost" id="mImport" style="margin-bottom:9px">データを読み込む</button>
     <input type="file" id="mFile" accept="application/json" hidden>
@@ -856,8 +898,17 @@ function coverHTML(b, opts = {}){
   const cls = t.length > 26 ? 'ttl sm' : 'ttl';
   const hasNote = db.notes.some(n => n.bookId === b.id && (n.purpose||n.answer||n.content||n.impression));
   const sub = (b.subtitle && !opts.small) ? `<span class="subbtm">${esc(b.subtitle)}</span>` : '';
-  /* 写真があれば敷いて、上下だけ沈める（C-2 方式）。
-     書名は常に文字で描くので、撮り方に関係なく読める。 */
+  const marks = `${b.status === 'reading' && !opts.noRibbon ? '<span class="ribbon"></span>' : ''}` +
+                `${hasNote ? '<span class="dot"></span>' : ''}`;
+
+  /* ① 取得できた書影 ─ 正規の表紙なので、加工せずそのまま置く */
+  if (b.jacket){
+    return `<span class="bk jk" style="background:${colorOf(b)}">
+      <img class="ph raw" src="${b.jacket}" alt="${t}"
+           onerror="this.closest('.bk').classList.remove('jk');this.remove()">
+      ${marks}</span>`;
+  }
+  /* ② 自分で撮った写真 ─ 撮り方が一定でないので、上下を沈めて書名を重ねる（C-2） */
   const photo = b.cover
     ? `<img class="ph" src="${b.cover}" alt=""><span class="veil"></span>`
     : '';
@@ -865,8 +916,7 @@ function coverHTML(b, opts = {}){
     ${photo}
     <span class="pad"><span class="${cls}">${t.length > 42 ? t.slice(0,42)+'…' : t}</span>
     <span class="rule"></span>${sub}<span class="aut">${esc(b.author||'')}</span></span>
-    ${b.status === 'reading' && !opts.noRibbon ? '<span class="ribbon"></span>' : ''}
-    ${hasNote ? '<span class="dot"></span>' : ''}</span>`;
+    ${marks}</span>`;
 }
 const bookOf = id => db.books.find(b => b.id === id);
 const noteOf = id => db.notes.find(n => n.bookId === id);
@@ -1000,6 +1050,12 @@ $('aSave').onclick = async () => {
     addedAt: readingDate(),
     finishedOn: addState.status === 'finished' ? readingDate() : null
   };
+  /* バーコードで登録した本は、その場で書影を探す */
+  if (b.isbn){
+    b.jacketTried = true;
+    const u = jacketUrl(b.isbn);
+    if (await imageExists(u)) b.jacket = u;
+  }
   db.books.unshift(b);
   await save();
   close('scAdd');
@@ -1156,6 +1212,44 @@ async function lookupIsbn(isbn){
 }
 let scanned = null;
 
+
+
+/* ── 書影の取得 ─────────────────────── */
+/*  ISBN から画像の場所を組み立てて、実在するかを確かめる。
+    実測では 8冊中6冊（75%）取得できた。取れない本は生成カバーになる。
+    ※ 将来こうして公開する段階では、正規のAPI経由に切り替える。
+      取得手段はこの関数の中だけに閉じてあるので、差し替えは容易。   */
+function jacketUrl(isbn){
+  if (!isbn || isbn.length !== 13) return null;
+  return 'https://thumbnail.image.rakuten.co.jp/@0_mall/book/cabinet/'
+       + isbn.slice(-4) + '/' + isbn + '.jpg?_ex=400x400';
+}
+
+function imageExists(url){
+  return new Promise(res => {
+    if (!url) return res(false);
+    const im = new Image();
+    const to = setTimeout(() => { im.src = ''; res(false); }, 6000);
+    im.onload  = () => { clearTimeout(to); res(im.naturalWidth > 40); };
+    im.onerror = () => { clearTimeout(to); res(false); };
+    im.src = url;
+  });
+}
+
+/* 登録済みの本のうち、まだ書影を調べていないものを順に確かめる */
+async function fillJackets(){
+  const todo = db.books.filter(b => b.isbn && !b.jacket && !b.jacketTried);
+  if (!todo.length) return;
+  let got = 0;
+  for (const b of todo){
+    const u = jacketUrl(b.isbn);
+    b.jacketTried = true;
+    if (await imageExists(u)){ b.jacket = u; got++; }
+  }
+  await save();
+  render();
+  if (got) toast(got + '冊の表紙が見つかりました');
+}
 
 /* ── 表紙を撮る ─────────────────────── */
 /*  検証で決めた方式：
@@ -1361,7 +1455,7 @@ function openBook(id){
     </div>
     <div class="acts">
       <button class="cta ghost" id="bShot">${b.cover ? '表紙を撮り直す' : '表紙を撮る'}</button>
-      ${b.cover ? `<button class="cta ghost" id="bClr">表紙を外す</button>` : ''}
+      ${(b.cover || b.jacket) ? `<button class="cta ghost" id="bClr">表紙を外す</button>` : ''}
     </div>
     <div class="acts"><button class="cta ghost" id="bDel" style="color:var(--shu)">この本を削除</button></div>`;
 
@@ -1376,7 +1470,10 @@ function openBook(id){
   };
   $('bShot').onclick = () => openShot(id);
   const cl = $('bClr');
-  if (cl) cl.onclick = async () => { delete b.cover; await save(); openBook(id); render(); toast('表紙を外しました'); };
+  if (cl) cl.onclick = async () => {
+    delete b.cover; delete b.jacket; b.jacketTried = true;
+    await save(); openBook(id); render(); toast('表紙を外しました');
+  };
   $('bDel').onclick = () => askDelete(id, b.title);
   open('scBook');
 }
@@ -1566,10 +1663,17 @@ $('btnMore').onclick = () => {
     `読んだ時間 ${Math.floor(total/60)}時間${total%60}分<br>` +
     `読み終えた本 ${db.books.filter(b=>b.status==='finished').length}冊<br>` +
     `読んだ日 ${days}日<br>記録のある本 ${db.notes.filter(n=>n.purpose||n.answer||n.content||n.impression).length}冊` +
-    `<br>表紙を撮った本 ${db.books.filter(b => b.cover).length}冊` +
+    `<br>書影が入った本 ${db.books.filter(b => b.jacket).length}冊` +
+    `<br>自分で撮った本 ${db.books.filter(b => b.cover).length}冊` +
     `<br><span style="color:var(--faint)">保存先：${store.name === 'claude' ? 'Claude の画面内' : 'このブラウザ（IndexedDB）'}` +
     ` ／ 使用量 約${Math.round(JSON.stringify(db).length/1024)}KB</span>`;
   open('scMore');
+};
+$('mRefetch').onclick = async () => {
+  db.books.forEach(b => { if (!b.cover) delete b.jacketTried; });
+  toast('さがしています…');
+  await fillJackets();
+  $('btnMore').click();
 };
 $('mExport').onclick = () => {
   const blob = new Blob([JSON.stringify(db,null,2)], {type:'application/json'});
@@ -1602,7 +1706,7 @@ $('tabs').onclick = e => {
   tab = b.dataset.s; render();
 };
 
-load();
+load().then(() => setTimeout(fillJackets, 600));
 
 /* オフラインでも起動できるようにする */
 if ('serviceWorker' in navigator){
