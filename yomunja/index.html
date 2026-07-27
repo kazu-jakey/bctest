@@ -70,6 +70,11 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 .bk:active{transform:translateY(-4px)}
 .bk::after{content:"";position:absolute;inset:0 auto 0 0;width:6px;z-index:5;
   background:linear-gradient(90deg,rgba(0,0,0,.34),transparent)}
+.bk .ph{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;
+  filter:saturate(.7) brightness(.72);z-index:1}
+.bk .veil{position:absolute;inset:0;z-index:2;background:linear-gradient(180deg,
+  rgba(16,22,30,.90) 0%, rgba(16,22,30,.32) 34%, rgba(16,22,30,.18) 62%, rgba(16,22,30,.88) 100%)}
+.bk.hasph .rule{border-top-color:rgba(255,255,255,.18)}
 .bk .pad{position:absolute;inset:0;padding:10px 8px;display:flex;flex-direction:column;text-align:left}
 .bk .ttl{font-family:"Noto Serif JP",serif;font-weight:600;color:#fff;font-size:11.5px;
   line-height:1.4;letter-spacing:.02em;text-shadow:0 1px 3px rgba(0,0,0,.4);position:relative;z-index:4}
@@ -286,6 +291,167 @@ async function lookupIsbn(isbn){
 }
 let scanned = null;
 
+
+/* ── 表紙を撮る ─────────────────────── */
+/*  検証で決めた方式：
+      枠ガイドで撮らせる（四隅の自動検出はしない）
+      明るさの伸ばしと色かぶり補正だけかける
+      反射が強ければ知らせる（直そうとはしない）
+      仕上げは 600×900 の JPEG                                   */
+let shStream = null, shFrame = null, shCrop = null, shBaseW = 0, shTarget = null;
+
+function openShot(bookId){
+  shTarget = bookId;
+  open('scShot');
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } })
+    .then(async st => {
+      shStream = st;
+      const v = $('shVideo'); v.srcObject = st; await v.play();
+      sizeGuide();
+    })
+    .catch(e => {
+      close('scShot');
+      toast('カメラを使えませんでした');
+    });
+}
+function sizeGuide(){
+  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const r = v.getBoundingClientRect();
+  if (!r.width) return;
+  let w = r.width * 0.72, h = w * 1.475;
+  if (h > r.height * 0.92){ h = r.height * 0.92; w = h / 1.475; }
+  g.style.width = w + 'px'; g.style.height = h + 'px'; g.style.aspectRatio = 'auto';
+}
+window.addEventListener('resize', () => { if (shStream) sizeGuide(); });
+
+function stopShot(){
+  if (shStream){ shStream.getTracks().forEach(t => t.stop()); shStream = null; }
+  close('scShot');
+}
+$('scShot').querySelector('[data-close]').addEventListener('click', stopShot);
+
+$('shTake').onclick = () => {
+  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw) return;
+  const f = document.createElement('canvas');
+  f.width = vw; f.height = vh;
+  f.getContext('2d').drawImage(v, 0, 0);
+  /* 画面の枠を映像座標へ換算する（見えている枠＝切り取られる範囲） */
+  const vr = v.getBoundingClientRect(), gr = g.getBoundingClientRect();
+  const sc = Math.min(vr.width / vw, vr.height / vh);
+  const ox = vr.left + (vr.width - vw*sc)/2, oy = vr.top + (vr.height - vh*sc)/2;
+  stopShot();
+  setFrame(f, (gr.left + gr.width/2 - ox)/sc, (gr.top + gr.height/2 - oy)/sc, gr.width/sc);
+};
+
+$('shPick').onclick = () => $('shFile').click();
+$('shFile').onchange = e => {
+  const fl = e.target.files[0]; if (!fl) return;
+  e.target.value = '';
+  const img = new Image();
+  img.onload = () => {
+    const f = document.createElement('canvas');
+    f.width = img.width; f.height = img.height;
+    f.getContext('2d').drawImage(img, 0, 0);
+    stopShot();
+    let w = img.width * 0.92;
+    if (w * 1.475 > img.height * 0.96) w = img.height * 0.96 / 1.475;
+    setFrame(f, img.width/2, img.height/2, w);
+  };
+  img.src = URL.createObjectURL(fl);
+};
+
+function setFrame(f, cx, cy, w){
+  shFrame = f; shCrop = { cx, cy, w }; shBaseW = w;
+  $('cpZoom').value = 100;
+  open('scCrop');
+  updateCrop();
+}
+function clampCrop(){
+  const maxW = Math.min(shFrame.width, shFrame.height / 1.475);
+  shCrop.w = Math.max(60, Math.min(shCrop.w, maxW));
+  const hw = shCrop.w/2, hh = shCrop.w*1.475/2;
+  shCrop.cx = Math.max(hw, Math.min(shCrop.cx, shFrame.width - hw));
+  shCrop.cy = Math.max(hh, Math.min(shCrop.cy, shFrame.height - hh));
+}
+function updateCrop(){
+  clampCrop();
+  const c = $('cpPrev'); c.width = 600; c.height = 885;
+  const ctx = c.getContext('2d', { willReadFrequently:true });
+  ctx.drawImage(shFrame, shCrop.cx - shCrop.w/2, shCrop.cy - shCrop.w*1.475/2,
+                shCrop.w, shCrop.w*1.475, 0, 0, 600, 885);
+  correct(ctx, 600, 885);
+}
+$('cpZoom').oninput = () => { if (shFrame){ shCrop.w = shBaseW * (100 / +$('cpZoom').value); updateCrop(); } };
+(function(){
+  const el = $('cpPrev'); let last = null;
+  const conv = d => d * (shCrop.w / el.getBoundingClientRect().width);
+  el.addEventListener('pointerdown', e => { if (!shFrame) return; last = {x:e.clientX,y:e.clientY}; el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointermove', e => {
+    if (!last || !shFrame) return;
+    shCrop.cx -= conv(e.clientX - last.x);
+    shCrop.cy -= conv(e.clientY - last.y);
+    last = {x:e.clientX,y:e.clientY};
+    updateCrop();
+  });
+  ['pointerup','pointercancel'].forEach(k => el.addEventListener(k, () => last = null));
+})();
+
+/* 明るさの伸ばし・色かぶり補正・わずかな減彩 */
+function correct(ctx, W, H){
+  const im = ctx.getImageData(0,0,W,H), d = im.data, n = d.length/4;
+  const hist = new Uint32Array(256);
+  let rs=0, gs=0, bs=0, blown=0;
+  for (let i=0;i<d.length;i+=4){
+    const l = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
+    hist[l]++; rs+=d[i]; gs+=d[i+1]; bs+=d[i+2];
+    if (l > 250) blown++;
+  }
+  const cut = n*0.01;
+  let lo=0, hi=255, acc=0;
+  for (let i=0;i<256;i++){ acc+=hist[i]; if (acc>cut){ lo=i; break; } }
+  acc=0;
+  for (let i=255;i>=0;i--){ acc+=hist[i]; if (acc>cut){ hi=i; break; } }
+  if (hi-lo < 20){ lo=0; hi=255; }
+  const ra=rs/n, ga=gs/n, ba=bs/n, gray=(ra+ga+ba)/3, wb=0.8;
+  const kr=1+((gray/ra)-1)*wb, kg=1+((gray/ga)-1)*wb, kb=1+((gray/ba)-1)*wb;
+  const span = Math.max(1, hi-lo), sat = 0.92;
+  for (let i=0;i<d.length;i+=4){
+    for (let k=0;k<3;k++){
+      const v = d[i+k] * (k===0?kr:k===1?kg:kb);
+      const t = (v-lo)/span*255;
+      d[i+k] = t<0?0:t>255?255:t;
+    }
+    const l = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+    for (let k=0;k<3;k++){
+      const v = l + (d[i+k]-l)*sat;
+      d[i+k] = v<0?0:v>255?255:v;
+    }
+  }
+  ctx.putImageData(im,0,0);
+  const pct = blown/n*100;
+  const el = $('cpDiag');
+  el.textContent = pct > 3
+    ? `光が反射しています（白飛び ${pct.toFixed(1)}%）。角度を変えて撮り直すと良くなります。`
+    : '明るさと色みを整えました。';
+  el.className = 'diagline' + (pct > 3 ? ' ng' : '');
+}
+
+async function saveCover(){
+  if (!shFrame || !shTarget) return;
+  const b = bookOf(shTarget); if (!b) return;
+  b.cover = $('cpPrev').toDataURL('image/jpeg', 0.78);
+  await save();
+  shFrame = null;
+  close('scCrop');
+  if ($('scBook').classList.contains('on')) openBook(shTarget); else render();
+  toast('表紙にしました');
+}
+$('cpSave').onclick  = saveCover;
+$('cpSave2').onclick = saveCover;
+$('cpRetry').onclick = () => { close('scCrop'); openShot(shTarget); };
+
 /* ── 本の詳細 ───────────────────────── */
 .dhead{display:flex;gap:15px;padding:20px 16px 18px}
 .dhead .bkw{flex:0 0 86px}
@@ -349,6 +515,22 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
 .scanfoot .t{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.7}
 .scanhint{padding:16px 18px;font-size:11px;line-height:1.9;color:rgba(255,255,255,.55);margin:0}
 .scanhint b{color:rgba(255,255,255,.85);font-weight:500}
+.guide{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:64%;aspect-ratio:2/2.95;border:2px solid rgba(255,255,255,.9);border-radius:3px;
+  box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
+.shotfoot{display:flex;align-items:center;gap:14px;padding:16px 18px;background:#151515}
+.shutter{width:52px;height:52px;border-radius:50%;border:3px solid #fff;background:var(--shu);
+  cursor:pointer;flex:0 0 auto}
+.pick{margin-left:auto;border:1px solid rgba(255,255,255,.4);background:none;color:#fff;
+  border-radius:3px;padding:9px 15px;font-size:11.5px;cursor:pointer}
+.cpwrap{width:62%;margin:0 auto 16px}
+.cpwrap canvas{width:100%;aspect-ratio:2/2.95;object-fit:cover;border-radius:2px;display:block;
+  box-shadow:0 6px 12px -7px rgba(40,25,15,.8);cursor:grab;touch-action:none}
+.knob{display:flex;align-items:center;gap:11px;font-size:11px;color:var(--mute);margin-bottom:12px}
+.knob label{flex:0 0 62px}
+.knob input{flex:1}
+.diagline{font-size:10.5px;line-height:1.75;color:var(--faint);margin:0 0 16px;min-height:1px}
+.diagline.ng{color:var(--shu)}
 .warn{position:fixed;left:0;right:0;bottom:0;z-index:70;display:none;
   align-items:center;gap:10px;padding:12px 14px calc(12px + env(safe-area-inset-bottom));background:var(--shu);color:#fff;
   font-size:11.5px;line-height:1.6}
@@ -462,7 +644,39 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
     <button class="cta ghost" id="mExport" style="margin-bottom:9px">データを書き出す</button>
     <button class="cta ghost" id="mImport" style="margin-bottom:9px">データを読み込む</button>
     <input type="file" id="mFile" accept="application/json" hidden>
-    <p class="hintline">この段階のデータは、この端末のこのブラウザにだけ保存されます。こまめに書き出してください。</p>
+    <p class="hintline">データはこの端末のこのブラウザにだけ保存されます。こまめに書き出してください。表紙を撮った本があると、書き出したファイルは大きくなります。</p>
+  </div>
+</div>
+
+<!-- 表紙を撮る -->
+<div class="screen" id="scShot" style="background:#0d0d0d">
+  <div class="shead" style="background:#0d0d0d;border-bottom-color:rgba(255,255,255,.14)">
+    <button class="icon" data-close style="color:#fff">✕</button>
+    <h2 style="color:#fff">表紙を撮る</h2>
+  </div>
+  <div style="position:relative">
+    <video id="shVideo" playsinline muted autoplay style="width:100%;display:block"></video>
+    <div class="guide"></div>
+  </div>
+  <div class="shotfoot">
+    <button class="shutter" id="shTake" aria-label="撮影"></button>
+    <button class="pick" id="shPick">画像を選ぶ</button>
+  </div>
+  <input type="file" id="shFile" accept="image/*" hidden>
+  <p class="scanhint">枠に表紙を入れてください。あとから位置を直せます。電子書籍は<b>画像を選ぶ</b>から、画面の写真を使えます。</p>
+</div>
+
+<!-- 撮った表紙の調整 -->
+<div class="screen sheet" id="scCrop">
+  <div class="shead"><button class="icon" data-close>←</button><h2>表紙を整える</h2>
+    <button class="done" id="cpSave">決定</button></div>
+  <div class="body">
+    <p class="hintline" style="border:0;padding:0;margin:0 0 12px">画像をドラッグで位置、スライダーで寄り引きを調整します。</p>
+    <div class="cpwrap"><canvas id="cpPrev"></canvas></div>
+    <div class="knob"><label>寄り引き</label><input type="range" id="cpZoom" min="60" max="150" value="100"></div>
+    <p class="diagline" id="cpDiag"></p>
+    <button class="cta" id="cpSave2">この表紙にする</button>
+    <button class="textbtn" id="cpRetry">撮り直す</button>
   </div>
 </div>
 
@@ -515,7 +729,10 @@ const PRESET_TAGS = {
   '科学':['物理・数学','生物','脳・心理','医学','環境','テクノロジー','統計・データ'],
   'その他':['エッセイ・随筆','哲学・思想','宗教','芸術','旅行','スポーツ','漫画']
 };
-const PALETTE = ['#3A2E2B','#2B2F33','#4A3B33','#33403A','#5A4A38','#AB1C13','#463A44','#6E6152','#7A6A4F','#3F4A4E'];
+const PALETTE = [
+  '#3A2E2B','#2B2F33','#4A3B33','#33403A','#5A4A38','#AB1C13',
+  '#463A44','#6E6152','#7A6A4F','#3F4A4E','#2F4A3C','#4E5B3A'
+];
 const PLACES = ['電車','寝る前','自宅','喫茶店','職場'];
 
 let db = { books:[], sessions:[], notes:[], places:[] };
@@ -592,7 +809,16 @@ async function load(){
 
 /* ── 小道具 ─────────────────────────── */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-function hash(s){ let h=0; for (let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return Math.abs(h); }
+/* FNV-1a。単純な 31 倍法より色の散りが良い（12冊で 6色→9色に改善） */
+function hash(s){
+  let h = 2166136261;
+  for (let i=0;i<s.length;i++){
+    const c = s.charCodeAt(i);
+    h ^= c & 0xFF;      h = Math.imul(h, 16777619);
+    h ^= c >>> 8;       h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
 function colorOf(b){ return PALETTE[hash(b.title + (b.author||'')) % PALETTE.length]; }
 
 /* 1日の切れ目は午前4時 */
@@ -609,7 +835,13 @@ function coverHTML(b, opts = {}){
   const cls = t.length > 26 ? 'ttl sm' : 'ttl';
   const hasNote = db.notes.some(n => n.bookId === b.id && (n.purpose||n.answer||n.content||n.impression));
   const sub = (b.subtitle && !opts.small) ? `<span class="subbtm">${esc(b.subtitle)}</span>` : '';
-  return `<span class="bk" style="background:${colorOf(b)}">
+  /* 写真があれば敷いて、上下だけ沈める（C-2 方式）。
+     書名は常に文字で描くので、撮り方に関係なく読める。 */
+  const photo = b.cover
+    ? `<img class="ph" src="${b.cover}" alt=""><span class="veil"></span>`
+    : '';
+  return `<span class="bk${b.cover ? ' hasph' : ''}" style="background:${colorOf(b)}">
+    ${photo}
     <span class="pad"><span class="${cls}">${t.length > 42 ? t.slice(0,42)+'…' : t}</span>
     <span class="rule"></span>${sub}<span class="aut">${esc(b.author||'')}</span></span>
     ${b.status === 'reading' && !opts.noRibbon ? '<span class="ribbon"></span>' : ''}
@@ -898,6 +1130,167 @@ async function lookupIsbn(isbn){
 }
 let scanned = null;
 
+
+/* ── 表紙を撮る ─────────────────────── */
+/*  検証で決めた方式：
+      枠ガイドで撮らせる（四隅の自動検出はしない）
+      明るさの伸ばしと色かぶり補正だけかける
+      反射が強ければ知らせる（直そうとはしない）
+      仕上げは 600×900 の JPEG                                   */
+let shStream = null, shFrame = null, shCrop = null, shBaseW = 0, shTarget = null;
+
+function openShot(bookId){
+  shTarget = bookId;
+  open('scShot');
+  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } })
+    .then(async st => {
+      shStream = st;
+      const v = $('shVideo'); v.srcObject = st; await v.play();
+      sizeGuide();
+    })
+    .catch(e => {
+      close('scShot');
+      toast('カメラを使えませんでした');
+    });
+}
+function sizeGuide(){
+  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const r = v.getBoundingClientRect();
+  if (!r.width) return;
+  let w = r.width * 0.72, h = w * 1.475;
+  if (h > r.height * 0.92){ h = r.height * 0.92; w = h / 1.475; }
+  g.style.width = w + 'px'; g.style.height = h + 'px'; g.style.aspectRatio = 'auto';
+}
+window.addEventListener('resize', () => { if (shStream) sizeGuide(); });
+
+function stopShot(){
+  if (shStream){ shStream.getTracks().forEach(t => t.stop()); shStream = null; }
+  close('scShot');
+}
+$('scShot').querySelector('[data-close]').addEventListener('click', stopShot);
+
+$('shTake').onclick = () => {
+  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw) return;
+  const f = document.createElement('canvas');
+  f.width = vw; f.height = vh;
+  f.getContext('2d').drawImage(v, 0, 0);
+  /* 画面の枠を映像座標へ換算する（見えている枠＝切り取られる範囲） */
+  const vr = v.getBoundingClientRect(), gr = g.getBoundingClientRect();
+  const sc = Math.min(vr.width / vw, vr.height / vh);
+  const ox = vr.left + (vr.width - vw*sc)/2, oy = vr.top + (vr.height - vh*sc)/2;
+  stopShot();
+  setFrame(f, (gr.left + gr.width/2 - ox)/sc, (gr.top + gr.height/2 - oy)/sc, gr.width/sc);
+};
+
+$('shPick').onclick = () => $('shFile').click();
+$('shFile').onchange = e => {
+  const fl = e.target.files[0]; if (!fl) return;
+  e.target.value = '';
+  const img = new Image();
+  img.onload = () => {
+    const f = document.createElement('canvas');
+    f.width = img.width; f.height = img.height;
+    f.getContext('2d').drawImage(img, 0, 0);
+    stopShot();
+    let w = img.width * 0.92;
+    if (w * 1.475 > img.height * 0.96) w = img.height * 0.96 / 1.475;
+    setFrame(f, img.width/2, img.height/2, w);
+  };
+  img.src = URL.createObjectURL(fl);
+};
+
+function setFrame(f, cx, cy, w){
+  shFrame = f; shCrop = { cx, cy, w }; shBaseW = w;
+  $('cpZoom').value = 100;
+  open('scCrop');
+  updateCrop();
+}
+function clampCrop(){
+  const maxW = Math.min(shFrame.width, shFrame.height / 1.475);
+  shCrop.w = Math.max(60, Math.min(shCrop.w, maxW));
+  const hw = shCrop.w/2, hh = shCrop.w*1.475/2;
+  shCrop.cx = Math.max(hw, Math.min(shCrop.cx, shFrame.width - hw));
+  shCrop.cy = Math.max(hh, Math.min(shCrop.cy, shFrame.height - hh));
+}
+function updateCrop(){
+  clampCrop();
+  const c = $('cpPrev'); c.width = 600; c.height = 885;
+  const ctx = c.getContext('2d', { willReadFrequently:true });
+  ctx.drawImage(shFrame, shCrop.cx - shCrop.w/2, shCrop.cy - shCrop.w*1.475/2,
+                shCrop.w, shCrop.w*1.475, 0, 0, 600, 885);
+  correct(ctx, 600, 885);
+}
+$('cpZoom').oninput = () => { if (shFrame){ shCrop.w = shBaseW * (100 / +$('cpZoom').value); updateCrop(); } };
+(function(){
+  const el = $('cpPrev'); let last = null;
+  const conv = d => d * (shCrop.w / el.getBoundingClientRect().width);
+  el.addEventListener('pointerdown', e => { if (!shFrame) return; last = {x:e.clientX,y:e.clientY}; el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointermove', e => {
+    if (!last || !shFrame) return;
+    shCrop.cx -= conv(e.clientX - last.x);
+    shCrop.cy -= conv(e.clientY - last.y);
+    last = {x:e.clientX,y:e.clientY};
+    updateCrop();
+  });
+  ['pointerup','pointercancel'].forEach(k => el.addEventListener(k, () => last = null));
+})();
+
+/* 明るさの伸ばし・色かぶり補正・わずかな減彩 */
+function correct(ctx, W, H){
+  const im = ctx.getImageData(0,0,W,H), d = im.data, n = d.length/4;
+  const hist = new Uint32Array(256);
+  let rs=0, gs=0, bs=0, blown=0;
+  for (let i=0;i<d.length;i+=4){
+    const l = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
+    hist[l]++; rs+=d[i]; gs+=d[i+1]; bs+=d[i+2];
+    if (l > 250) blown++;
+  }
+  const cut = n*0.01;
+  let lo=0, hi=255, acc=0;
+  for (let i=0;i<256;i++){ acc+=hist[i]; if (acc>cut){ lo=i; break; } }
+  acc=0;
+  for (let i=255;i>=0;i--){ acc+=hist[i]; if (acc>cut){ hi=i; break; } }
+  if (hi-lo < 20){ lo=0; hi=255; }
+  const ra=rs/n, ga=gs/n, ba=bs/n, gray=(ra+ga+ba)/3, wb=0.8;
+  const kr=1+((gray/ra)-1)*wb, kg=1+((gray/ga)-1)*wb, kb=1+((gray/ba)-1)*wb;
+  const span = Math.max(1, hi-lo), sat = 0.92;
+  for (let i=0;i<d.length;i+=4){
+    for (let k=0;k<3;k++){
+      const v = d[i+k] * (k===0?kr:k===1?kg:kb);
+      const t = (v-lo)/span*255;
+      d[i+k] = t<0?0:t>255?255:t;
+    }
+    const l = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+    for (let k=0;k<3;k++){
+      const v = l + (d[i+k]-l)*sat;
+      d[i+k] = v<0?0:v>255?255:v;
+    }
+  }
+  ctx.putImageData(im,0,0);
+  const pct = blown/n*100;
+  const el = $('cpDiag');
+  el.textContent = pct > 3
+    ? `光が反射しています（白飛び ${pct.toFixed(1)}%）。角度を変えて撮り直すと良くなります。`
+    : '明るさと色みを整えました。';
+  el.className = 'diagline' + (pct > 3 ? ' ng' : '');
+}
+
+async function saveCover(){
+  if (!shFrame || !shTarget) return;
+  const b = bookOf(shTarget); if (!b) return;
+  b.cover = $('cpPrev').toDataURL('image/jpeg', 0.78);
+  await save();
+  shFrame = null;
+  close('scCrop');
+  if ($('scBook').classList.contains('on')) openBook(shTarget); else render();
+  toast('表紙にしました');
+}
+$('cpSave').onclick  = saveCover;
+$('cpSave2').onclick = saveCover;
+$('cpRetry').onclick = () => { close('scCrop'); openShot(shTarget); };
+
 /* ── 本の詳細 ───────────────────────── */
 function openBook(id){
   cur = id;
@@ -937,6 +1330,10 @@ function openBook(id){
       ${b.status !== 'finished' ? `<button class="cta" id="bRead">読む</button>` : ''}
       ${b.status !== 'finished' ? `<button class="cta ghost" id="bFinish">読み終えた</button>` : `<button class="cta ghost" id="bBack">読みかけに戻す</button>`}
     </div>
+    <div class="acts">
+      <button class="cta ghost" id="bShot">${b.cover ? '表紙を撮り直す' : '表紙を撮る'}</button>
+      ${b.cover ? `<button class="cta ghost" id="bClr">表紙を外す</button>` : ''}
+    </div>
     <div class="acts"><button class="cta ghost" id="bDel" style="color:var(--shu)">この本を削除</button></div>`;
 
   const r = $('bRead');   if (r) r.onclick = () => startTimer(id);
@@ -948,6 +1345,9 @@ function openBook(id){
   const bk = $('bBack'); if (bk) bk.onclick = async () => {
     b.status = 'reading'; b.finishedOn = null; await save(); openBook(id); render();
   };
+  $('bShot').onclick = () => openShot(id);
+  const cl = $('bClr');
+  if (cl) cl.onclick = async () => { delete b.cover; await save(); openBook(id); render(); toast('表紙を外しました'); };
   $('bDel').onclick = () => askDelete(id, b.title);
   open('scBook');
 }
@@ -1137,7 +1537,9 @@ $('btnMore').onclick = () => {
     `読んだ時間 ${Math.floor(total/60)}時間${total%60}分<br>` +
     `読み終えた本 ${db.books.filter(b=>b.status==='finished').length}冊<br>` +
     `読んだ日 ${days}日<br>記録のある本 ${db.notes.filter(n=>n.purpose||n.answer||n.content||n.impression).length}冊` +
-    `<br><span style="color:var(--faint)">保存先：${store.name === 'claude' ? 'Claude の画面内' : 'このブラウザ（IndexedDB）'}</span>`;
+    `<br>表紙を撮った本 ${db.books.filter(b => b.cover).length}冊` +
+    `<br><span style="color:var(--faint)">保存先：${store.name === 'claude' ? 'Claude の画面内' : 'このブラウザ（IndexedDB）'}` +
+    ` ／ 使用量 約${Math.round(JSON.stringify(db).length/1024)}KB</span>`;
   open('scMore');
 };
 $('mExport').onclick = () => {
