@@ -269,6 +269,7 @@ async function lookupIsbn(isbn){
     }
     const t = cleanTitle(sm.title);
     $('aTitle').value  = t.main;
+    $('aSub').value    = t.sub;
     $('aAuthor').value = cleanAuthor(sm.author);
     scanned = { isbn, publisher: sm.publisher || '', subtitle: t.sub, pubdate: sm.pubdate || '' };
     setScanMsg('読み取りました' + (sm.publisher ? '（' + sm.publisher + '）' : '') + (t.sub ? '／' + t.sub : ''));
@@ -283,6 +284,7 @@ let scanned = null;
 .dhead .bkw{flex:0 0 86px}
 .dhead .m{flex:1;min-width:0}
 .dhead h3{font-family:"Noto Serif JP",serif;font-size:15px;margin:0 0 4px;line-height:1.45}
+.dhead .sub2{font-size:11.5px;color:var(--mute);margin:0 0 6px;line-height:1.6}
 .dhead .by{font-size:11px;color:var(--mute);margin:0 0 9px}
 .dhead .meta{font-size:10px;color:var(--faint);line-height:1.8;margin:0}
 .sect{padding:0 16px 22px}
@@ -377,6 +379,7 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
     <button class="cta scan" id="aScan">バーコードで読む<small>本の裏の 978 で始まる段</small></button>
     <p class="scanmsg" id="aScanMsg"></p>
     <div class="field"><label>書名</label><input id="aTitle" placeholder="ストーリーとしての競争戦略"></div>
+    <div class="field"><label>副題<span class="opt">任意</span></label><input id="aSub" placeholder="優れた戦略の条件"></div>
     <div class="field"><label>著者<span class="opt">任意</span></label><input id="aAuthor" placeholder="楠木建"></div>
     <div class="field"><label>ジャンル</label><div class="chips" id="aGenre"></div></div>
     <div class="field"><label>小分類<span class="opt">任意・複数可</span></label><div class="chips" id="aTags"></div></div>
@@ -512,12 +515,53 @@ let db = { books:[], sessions:[], notes:[], places:[] };
 let tab = 'finished', cur = null, timer = null;
 
 /* ── 保存 ───────────────────────────── */
+/*  保存先は環境で変わる。
+      Claude の画面内 … window.storage
+      GitHub Pages 等 … ブラウザの IndexedDB
+    どちらも使えないときだけ警告を出す。                          */
+const store = (() => {
+  const KEY = 'tana-db';
+  if (typeof window.storage !== 'undefined' && window.storage){
+    return {
+      name:'claude',
+      get: async () => { const r = await window.storage.get(KEY); return r ? r.value : null; },
+      set: async v => { await window.storage.set(KEY, v); }
+    };
+  }
+  const open = () => new Promise((res, rej) => {
+    const q = indexedDB.open('tana', 1);
+    q.onupgradeneeded = () => q.result.createObjectStore('kv');
+    q.onsuccess = () => res(q.result);
+    q.onerror = () => rej(q.error);
+  });
+  return {
+    name:'indexeddb',
+    get: async () => {
+      const d = await open();
+      return new Promise((res, rej) => {
+        const r = d.transaction('kv','readonly').objectStore('kv').get(KEY);
+        r.onsuccess = () => res(r.result ?? null);
+        r.onerror = () => rej(r.error);
+      });
+    },
+    set: async v => {
+      const d = await open();
+      return new Promise((res, rej) => {
+        const tx = d.transaction('kv','readwrite');
+        tx.objectStore('kv').put(v, KEY);
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+      });
+    }
+  };
+})();
+
 let saveFail = 0;
 async function save(){
   const payload = JSON.stringify(db);
   for (let i = 0; i < 3; i++){
     try {
-      await window.storage.set('tana-db', payload);
+      await store.set(payload);
       saveFail = 0;
       $('warn').classList.remove('on');
       return true;
@@ -533,9 +577,9 @@ async function save(){
 }
 async function load(){
   try {
-    const r = await window.storage.get('tana-db');
-    if (r) db = Object.assign({ books:[], sessions:[], notes:[], places:[] }, JSON.parse(r.value));
-  } catch(e){}
+    const v = await store.get();
+    if (v) db = Object.assign({ books:[], sessions:[], notes:[], places:[] }, JSON.parse(v));
+  } catch(e){ console.warn('読み込みに失敗', e); }
   render();
 }
 
@@ -620,6 +664,7 @@ function renderReading(list){
       <div class="now-meta">
         <p class="now-kicker">${last ? fmtDate(last.date) + ' のつづき' : 'まだ記録がありません'}</p>
         <h3>${esc(head.title)}</h3>
+        ${head.subtitle ? `<p class="now-by" style="margin-bottom:4px">${esc(head.subtitle)}</p>` : ''}
         <p class="now-by">${esc(head.author||'')}</p>
         <p class="now-pos">${last && last.page ? last.page + ' ページまで' : ''}${minutesOf(head.id) ? (last&&last.page?' ／ ':'') + '通算 ' + minutesOf(head.id) + '分' : ''}</p>
         ${n && n.purpose ? `<dl class="aim" style="margin-bottom:14px"><dt>読む目的</dt><dd>${esc(n.purpose)}</dd></dl>` : ''}
@@ -648,7 +693,7 @@ document.querySelectorAll('[data-close]').forEach(el =>
 let addState = { genre:'ビジネス', tags:[], status:'finished' };
 $('btnAdd').onclick = () => {
   addState = { genre:'ビジネス', tags:[], status:'finished' };
-  ['aTitle','aAuthor','aReason'].forEach(i => $(i).value = '');
+  ['aTitle','aSub','aAuthor','aReason'].forEach(i => $(i).value = '');
   scanned = null; setScanMsg('');
   drawAddChips();
   open('scAdd');
@@ -690,7 +735,7 @@ $('aSave').onclick = async () => {
     status: addState.status, reason: $('aReason').value.trim(),
     isbn: scanned ? scanned.isbn : null,
     publisher: scanned ? scanned.publisher : '',
-    subtitle: scanned ? scanned.subtitle : '',
+    subtitle: $('aSub').value.trim(),
     addedAt: readingDate(),
     finishedOn: addState.status === 'finished' ? readingDate() : null
   };
@@ -835,6 +880,7 @@ async function lookupIsbn(isbn){
     }
     const t = cleanTitle(sm.title);
     $('aTitle').value  = t.main;
+    $('aSub').value    = t.sub;
     $('aAuthor').value = cleanAuthor(sm.author);
     scanned = { isbn, publisher: sm.publisher || '', subtitle: t.sub, pubdate: sm.pubdate || '' };
     setScanMsg('読み取りました' + (sm.publisher ? '（' + sm.publisher + '）' : '') + (t.sub ? '／' + t.sub : ''));
@@ -859,6 +905,7 @@ function openBook(id){
       <span class="bkw">${coverHTML(b, {noRibbon:true})}</span>
       <div class="m">
         <h3>${esc(b.title)}</h3>
+        ${b.subtitle ? `<p class="sub2">${esc(b.subtitle)}</p>` : ''}
         <p class="by">${esc(b.author||'著者不明')}</p>
         <p class="meta">${labels[b.status]}${b.finishedOn ? ' ／ ' + fmtDate(b.finishedOn) : ''}<br>
           ${b.publisher ? esc(b.publisher) + '<br>' : ''}${esc(b.genre)}${(b.tags||[]).length ? ' ／ ' + b.tags.map(esc).join('・') : ''}
@@ -1051,7 +1098,7 @@ function drawSearch(){
       ['読む目的', n.purpose], ['目的への答え', n.answer],
       ['本の中身', n.content], ['感想', n.impression], ['買ったときのメモ', b.reason]
     ].filter(f => f[1]);
-    const inMeta = !q || (b.title + ' ' + (b.author||'') + ' ' + (b.tags||[]).join(' ')).toLowerCase().includes(q);
+    const inMeta = !q || (b.title + ' ' + (b.subtitle||'') + ' ' + (b.author||'') + ' ' + (b.tags||[]).join(' ')).toLowerCase().includes(q);
     let hit = false;
     fields.forEach(([label, text]) => {
       if (q && text.toLowerCase().includes(q)){
@@ -1081,7 +1128,8 @@ $('btnMore').onclick = () => {
   $('mStats').innerHTML =
     `読んだ時間 ${Math.floor(total/60)}時間${total%60}分<br>` +
     `読み終えた本 ${db.books.filter(b=>b.status==='finished').length}冊<br>` +
-    `読んだ日 ${days}日<br>記録のある本 ${db.notes.filter(n=>n.purpose||n.answer||n.content||n.impression).length}冊`;
+    `読んだ日 ${days}日<br>記録のある本 ${db.notes.filter(n=>n.purpose||n.answer||n.content||n.impression).length}冊` +
+    `<br><span style="color:var(--faint)">保存先：${store.name === 'claude' ? 'Claude の画面内' : 'このブラウザ（IndexedDB）'}</span>`;
   open('scMore');
 };
 $('mExport').onclick = () => {
