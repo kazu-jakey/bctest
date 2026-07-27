@@ -72,6 +72,8 @@ button,input,textarea,select{font-family:inherit;color:inherit}
   line-height:1.4;letter-spacing:.02em;text-shadow:0 1px 3px rgba(0,0,0,.4);position:relative;z-index:4}
 .bk .ttl.sm{font-size:10px}
 .bk .rule{border-top:1px solid rgba(255,255,255,.26);margin:8px 0 auto;position:relative;z-index:4}
+.bk .subbtm{font-size:8.5px;line-height:1.5;color:rgba(255,255,255,.66);margin-bottom:5px;
+  position:relative;z-index:4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .bk .aut{font-size:7.5px;color:rgba(255,255,255,.78);position:relative;z-index:4;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ribbon{position:absolute;right:17%;top:-3px;width:5px;height:34%;z-index:6;
@@ -97,6 +99,8 @@ button,input,textarea,select{font-family:inherit;color:inherit}
 
 /* ── 平積み ─────────────────────────── */
 .stack{margin-bottom:16px}
+.slabsub{font-size:9px;opacity:.62;margin-left:8px;font-family:"Noto Sans JP",sans-serif;
+  overflow:hidden;text-overflow:ellipsis}
 .slab{height:30px;border-radius:2px;margin-top:-1px;display:flex;align-items:center;
   padding:0 13px;font-family:"Noto Serif JP",serif;font-size:11px;color:rgba(255,255,255,.92);
   letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -601,9 +605,10 @@ function coverHTML(b, opts = {}){
   const t = esc(b.title);
   const cls = t.length > 26 ? 'ttl sm' : 'ttl';
   const hasNote = db.notes.some(n => n.bookId === b.id && (n.purpose||n.answer||n.content||n.impression));
+  const sub = (b.subtitle && !opts.small) ? `<span class="subbtm">${esc(b.subtitle)}</span>` : '';
   return `<span class="bk" style="background:${colorOf(b)}">
     <span class="pad"><span class="${cls}">${t.length > 42 ? t.slice(0,42)+'…' : t}</span>
-    <span class="rule"></span><span class="aut">${esc(b.author||'')}</span></span>
+    <span class="rule"></span>${sub}<span class="aut">${esc(b.author||'')}</span></span>
     ${b.status === 'reading' && !opts.noRibbon ? '<span class="ribbon"></span>' : ''}
     ${hasNote ? '<span class="dot"></span>' : ''}</span>`;
 }
@@ -672,13 +677,13 @@ function renderReading(list){
       </div>
     </div>` +
     rest.map(b => `<button class="mini" data-book="${b.id}">
-      <span class="bkw">${coverHTML(b)}</span>
+      <span class="bkw">${coverHTML(b,{small:true})}</span>
       <span><h4>${esc(b.title)}</h4><p>通算 ${minutesOf(b.id)}分</p></span></button>`).join('');
 }
 
 function renderStack(list){
   return `<div class="stack">` + list.map(b =>
-    `<button class="slab" data-book="${b.id}" style="background-color:${colorOf(b)}">${esc(b.title)}</button>`
+    `<button class="slab" data-book="${b.id}" style="background-color:${colorOf(b)}">${esc(b.title)}${b.subtitle ? `<span class="slabsub">${esc(b.subtitle)}</span>` : ''}</button>`
   ).join('') + `</div>
   <p class="hintline">積んである本は、まだ使っていない在庫です。</p>`;
 }
@@ -1114,7 +1119,7 @@ function drawSearch(){
   $('sCount').textContent = q || sGenre ? `${rows.length}件` : '書名・著者・タグ・メモの中身から探します';
   $('sRes').innerHTML = rows.map(r => `
     <button class="hit" data-book="${r.b.id}">
-      <span class="bkw">${coverHTML(r.b,{noRibbon:true})}</span>
+      <span class="bkw">${coverHTML(r.b,{noRibbon:true,small:true})}</span>
       <span class="m"><p class="src">${esc(r.b.title)} ─ ${r.label}</p>
       <p class="frag">${r.frag || ''}</p></span></button>`).join('');
   $('sRes').querySelectorAll('[data-book]').forEach(el =>
