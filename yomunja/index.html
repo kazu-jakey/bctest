@@ -219,8 +219,13 @@ $('aScan').onclick = async () => {
     if (vd.videoWidth){
       try {
         const c = document.createElement('canvas');
-        const sx = vd.videoWidth*0.06, sw = vd.videoWidth*0.88;
-        const sy = vd.videoHeight*0.36, sh = vd.videoHeight*0.27;
+        const r = $('scReticle').getBoundingClientRect();
+        const vr = vd.getBoundingClientRect();
+        const k = Math.max(vr.width/vd.videoWidth, vr.height/vd.videoHeight);
+        const ox = vr.left + (vr.width - vd.videoWidth*k)/2;
+        const oy = vr.top  + (vr.height - vd.videoHeight*k)/2;
+        const sx = (r.left - ox)/k, sy = (r.top - oy)/k;
+        const sw = r.width/k,       sh = r.height/k;
         c.width = Math.min(1400, sw*1.4)|0;
         c.height = (c.width*sh/sw)|0;
         c.getContext('2d',{willReadFrequently:true}).drawImage(vd, sx, sy, sw, sh, 0, 0, c.width, c.height);
@@ -308,6 +313,7 @@ function openShot(bookId){
       shStream = st;
       const v = $('shVideo'); v.srcObject = st; await v.play();
       sizeGuide();
+      setTimeout(sizeGuide, 300);
     })
     .catch(e => {
       close('scShot');
@@ -315,12 +321,13 @@ function openShot(bookId){
     });
 }
 function sizeGuide(){
-  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
-  const r = v.getBoundingClientRect();
-  if (!r.width) return;
-  let w = r.width * 0.72, h = w * 1.475;
-  if (h > r.height * 0.92){ h = r.height * 0.92; w = h / 1.475; }
-  g.style.width = w + 'px'; g.style.height = h + 'px'; g.style.aspectRatio = 'auto';
+  const g = $('shGuide');
+  const W = window.innerWidth, H = window.innerHeight;
+  /* 上の見出しと下の操作帯を避けた範囲に収める */
+  const avail = H - 150 - 120;
+  let w = W * 0.74, h = w * 1.475;
+  if (h > avail){ h = avail; w = h / 1.475; }
+  g.style.width = w + 'px'; g.style.height = h + 'px';
 }
 window.addEventListener('resize', () => { if (shStream) sizeGuide(); });
 
@@ -331,15 +338,16 @@ function stopShot(){
 $('scShot').querySelector('[data-close]').addEventListener('click', stopShot);
 
 $('shTake').onclick = () => {
-  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const v = $('shVideo'), g = $('shGuide');
   const vw = v.videoWidth, vh = v.videoHeight;
   if (!vw) return;
   const f = document.createElement('canvas');
   f.width = vw; f.height = vh;
   f.getContext('2d').drawImage(v, 0, 0);
-  /* 画面の枠を映像座標へ換算する（見えている枠＝切り取られる範囲） */
+  /* 映像は画面いっぱいに引き伸ばして表示（cover）しているので、
+     はみ出しぶんを差し引いて枠の位置を映像の座標に直す */
   const vr = v.getBoundingClientRect(), gr = g.getBoundingClientRect();
-  const sc = Math.min(vr.width / vw, vr.height / vh);
+  const sc = Math.max(vr.width / vw, vr.height / vh);
   const ox = vr.left + (vr.width - vw*sc)/2, oy = vr.top + (vr.height - vh*sc)/2;
   stopShot();
   setFrame(f, (gr.left + gr.width/2 - ox)/sc, (gr.top + gr.height/2 - oy)/sc, gr.width/sc);
@@ -508,21 +516,34 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
 .cta.scan small{display:block;font-size:9.5px;opacity:.8;margin-top:3px}
 .scanmsg{font-size:11px;line-height:1.7;color:var(--mute);margin:0 0 15px;min-height:1px}
 .scanmsg.ng{color:var(--shu)}
-.reticle{position:absolute;left:6%;right:6%;top:36%;height:27%;
-  border:2px solid rgba(255,255,255,.92);border-radius:3px;box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
-.scanfoot{display:flex;align-items:center;gap:10px;padding:12px 14px;background:#151515;
-  color:rgba(255,255,255,.85);font-size:11px}
-.scanfoot .t{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.7}
-.scanhint{padding:16px 18px;font-size:11px;line-height:1.9;color:rgba(255,255,255,.55);margin:0}
-.scanhint b{color:rgba(255,255,255,.85);font-weight:500}
-.guide{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-  width:64%;aspect-ratio:2/2.95;border:2px solid rgba(255,255,255,.9);border-radius:3px;
-  box-shadow:0 0 0 2000px rgba(0,0,0,.45)}
-.shotfoot{display:flex;align-items:center;gap:14px;padding:16px 18px;background:#151515}
-.shutter{width:52px;height:52px;border-radius:50%;border:3px solid #fff;background:var(--shu);
-  cursor:pointer;flex:0 0 auto}
-.pick{margin-left:auto;border:1px solid rgba(255,255,255,.4);background:none;color:#fff;
-  border-radius:3px;padding:9px 15px;font-size:11.5px;cursor:pointer}
+.reticle{position:absolute;left:7%;right:7%;top:calc(50% - 60px);height:120px;
+  border:2px solid rgba(255,255,255,.92);border-radius:3px;
+  box-shadow:0 0 0 2000px rgba(0,0,0,.45);pointer-events:none}
+.camhint b{color:#fff;font-weight:500}
+/* 撮影画面は全画面固定。映像を敷き、操作はその上に重ねる */
+.screen.cam{background:#000;overflow:hidden;display:none}
+.screen.cam.on{display:block}
+.screen.cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.guide{position:absolute;left:50%;top:calc(50% - 26px);transform:translate(-50%,-50%);
+  border:2px solid rgba(255,255,255,.92);border-radius:3px;
+  box-shadow:0 0 0 2000px rgba(0,0,0,.45);pointer-events:none}
+.camtop{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:8px;
+  padding:calc(10px + env(safe-area-inset-top)) 12px 12px;
+  background:linear-gradient(180deg,rgba(0,0,0,.62),transparent);z-index:3}
+.camttl{color:#fff;font-family:"Noto Serif JP",serif;font-size:14px;font-weight:600}
+.camhint{position:absolute;left:16px;right:16px;bottom:calc(128px + env(safe-area-inset-bottom));
+  text-align:center;color:rgba(255,255,255,.82);font-size:11px;line-height:1.7;margin:0;z-index:3;
+  text-shadow:0 1px 4px rgba(0,0,0,.8)}
+.cambar{position:absolute;left:0;right:0;bottom:0;z-index:4;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:20px 20px calc(24px + env(safe-area-inset-bottom));
+  background:linear-gradient(0deg,rgba(0,0,0,.72),transparent)}
+.shutter{width:66px;height:66px;border-radius:50%;border:4px solid #fff;background:var(--shu);
+  cursor:pointer;flex:0 0 auto;box-shadow:0 0 0 2px rgba(0,0,0,.25)}
+.shutter:active{transform:scale(.94)}
+.pick,.pickpad{flex:0 0 96px}
+.pick{border:1px solid rgba(255,255,255,.5);background:rgba(0,0,0,.3);color:#fff;
+  border-radius:4px;padding:10px 0;font-size:11.5px;cursor:pointer}
 .cpwrap{width:62%;margin:0 auto 16px}
 .cpwrap canvas{width:100%;aspect-ratio:2/2.95;object-fit:cover;border-radius:2px;display:block;
   box-shadow:0 6px 12px -7px rgba(40,25,15,.8);cursor:grab;touch-action:none}
@@ -649,21 +670,20 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
 </div>
 
 <!-- 表紙を撮る -->
-<div class="screen" id="scShot" style="background:#0d0d0d">
-  <div class="shead" style="background:#0d0d0d;border-bottom-color:rgba(255,255,255,.14)">
+<div class="screen cam" id="scShot">
+  <video id="shVideo" playsinline muted autoplay></video>
+  <div class="guide" id="shGuide"></div>
+  <div class="camtop">
     <button class="icon" data-close style="color:#fff">✕</button>
-    <h2 style="color:#fff">表紙を撮る</h2>
+    <span class="camttl">表紙を撮る</span>
   </div>
-  <div style="position:relative">
-    <video id="shVideo" playsinline muted autoplay style="width:100%;display:block"></video>
-    <div class="guide"></div>
-  </div>
-  <div class="shotfoot">
-    <button class="shutter" id="shTake" aria-label="撮影"></button>
+  <p class="camhint">枠に表紙を入れてください。あとから位置を直せます。</p>
+  <div class="cambar">
     <button class="pick" id="shPick">画像を選ぶ</button>
+    <button class="shutter" id="shTake" aria-label="撮影"></button>
+    <span class="pickpad"></span>
   </div>
   <input type="file" id="shFile" accept="image/*" hidden>
-  <p class="scanhint">枠に表紙を入れてください。あとから位置を直せます。電子書籍は<b>画像を選ぶ</b>から、画面の写真を使えます。</p>
 </div>
 
 <!-- 撮った表紙の調整 -->
@@ -681,17 +701,18 @@ mark{background:rgba(180,71,46,.16);color:var(--shu);padding:0 1px;border-radius
 </div>
 
 <!-- バーコード -->
-<div class="screen" id="scScan" style="background:#0d0d0d">
-  <div class="shead" style="background:#0d0d0d;border-bottom-color:rgba(255,255,255,.14)">
+<div class="screen cam" id="scScan">
+  <video id="scVideo" playsinline muted autoplay></video>
+  <div class="reticle" id="scReticle"></div>
+  <div class="camtop">
     <button class="icon" data-close style="color:#fff">✕</button>
-    <h2 style="color:#fff">バーコードを読む</h2>
+    <span class="camttl">バーコードを読む</span>
   </div>
-  <div style="position:relative">
-    <video id="scVideo" playsinline muted autoplay style="width:100%;display:block"></video>
-    <div class="reticle"></div>
+  <p class="camhint">本の裏側、<b>上の段</b>のバーコードを枠に入れてください。<br>下の段は価格の情報なので読み取りません。</p>
+  <div class="cambar" style="justify-content:center">
+    <span id="scMsg" style="color:rgba(255,255,255,.85);font-size:12px">用意しています…</span>
+    <span id="scT" style="color:rgba(255,255,255,.5);font-size:11px;margin-left:10px"></span>
   </div>
-  <div class="scanfoot"><span id="scMsg">用意しています…</span><span class="t" id="scT"></span></div>
-  <p class="scanhint">本の裏側、<b>上の段</b>のバーコードを枠に入れてください。下の段は価格の情報なので読み取りません。</p>
 </div>
 
 <!-- 文字入力 -->
@@ -1058,8 +1079,13 @@ $('aScan').onclick = async () => {
     if (vd.videoWidth){
       try {
         const c = document.createElement('canvas');
-        const sx = vd.videoWidth*0.06, sw = vd.videoWidth*0.88;
-        const sy = vd.videoHeight*0.36, sh = vd.videoHeight*0.27;
+        const r = $('scReticle').getBoundingClientRect();
+        const vr = vd.getBoundingClientRect();
+        const k = Math.max(vr.width/vd.videoWidth, vr.height/vd.videoHeight);
+        const ox = vr.left + (vr.width - vd.videoWidth*k)/2;
+        const oy = vr.top  + (vr.height - vd.videoHeight*k)/2;
+        const sx = (r.left - ox)/k, sy = (r.top - oy)/k;
+        const sw = r.width/k,       sh = r.height/k;
         c.width = Math.min(1400, sw*1.4)|0;
         c.height = (c.width*sh/sw)|0;
         c.getContext('2d',{willReadFrequently:true}).drawImage(vd, sx, sy, sw, sh, 0, 0, c.width, c.height);
@@ -1147,6 +1173,7 @@ function openShot(bookId){
       shStream = st;
       const v = $('shVideo'); v.srcObject = st; await v.play();
       sizeGuide();
+      setTimeout(sizeGuide, 300);
     })
     .catch(e => {
       close('scShot');
@@ -1154,12 +1181,13 @@ function openShot(bookId){
     });
 }
 function sizeGuide(){
-  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
-  const r = v.getBoundingClientRect();
-  if (!r.width) return;
-  let w = r.width * 0.72, h = w * 1.475;
-  if (h > r.height * 0.92){ h = r.height * 0.92; w = h / 1.475; }
-  g.style.width = w + 'px'; g.style.height = h + 'px'; g.style.aspectRatio = 'auto';
+  const g = $('shGuide');
+  const W = window.innerWidth, H = window.innerHeight;
+  /* 上の見出しと下の操作帯を避けた範囲に収める */
+  const avail = H - 150 - 120;
+  let w = W * 0.74, h = w * 1.475;
+  if (h > avail){ h = avail; w = h / 1.475; }
+  g.style.width = w + 'px'; g.style.height = h + 'px';
 }
 window.addEventListener('resize', () => { if (shStream) sizeGuide(); });
 
@@ -1170,15 +1198,16 @@ function stopShot(){
 $('scShot').querySelector('[data-close]').addEventListener('click', stopShot);
 
 $('shTake').onclick = () => {
-  const v = $('shVideo'), g = $('scShot').querySelector('.guide');
+  const v = $('shVideo'), g = $('shGuide');
   const vw = v.videoWidth, vh = v.videoHeight;
   if (!vw) return;
   const f = document.createElement('canvas');
   f.width = vw; f.height = vh;
   f.getContext('2d').drawImage(v, 0, 0);
-  /* 画面の枠を映像座標へ換算する（見えている枠＝切り取られる範囲） */
+  /* 映像は画面いっぱいに引き伸ばして表示（cover）しているので、
+     はみ出しぶんを差し引いて枠の位置を映像の座標に直す */
   const vr = v.getBoundingClientRect(), gr = g.getBoundingClientRect();
-  const sc = Math.min(vr.width / vw, vr.height / vh);
+  const sc = Math.max(vr.width / vw, vr.height / vh);
   const ox = vr.left + (vr.width - vw*sc)/2, oy = vr.top + (vr.height - vh*sc)/2;
   stopShot();
   setFrame(f, (gr.left + gr.width/2 - ox)/sc, (gr.top + gr.height/2 - oy)/sc, gr.width/sc);
