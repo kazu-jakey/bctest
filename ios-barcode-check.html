@@ -1,0 +1,284 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>iOS バーコード読み取り診断</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500&family=Noto+Serif+JP:wght@400;600&display=swap');
+:root{--paper:#F4EFE6;--deep:#EBE2D3;--field:#FBF8F1;--ink:#1B2B3A;--mute:#6E655A;
+ --faint:#9C9184;--ai:#24486E;--shu:#B4472E;--ok:#3E6B4F;--rule:rgba(27,43,58,.14)}
+*{box-sizing:border-box}
+body{margin:0;padding:18px 14px 50px;background:var(--paper);color:var(--ink);
+ font-family:"Noto Sans JP",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:460px;margin:0 auto}
+h1{font-family:"Noto Serif JP",serif;font-size:17px;margin:0 0 4px;font-weight:600}
+.sub{font-size:11.5px;color:var(--mute);line-height:1.75;margin:0 0 18px}
+
+.env{background:var(--field);border:1px solid var(--rule);border-radius:3px;padding:11px 12px;
+ font-size:10.5px;line-height:1.9;color:var(--mute);margin-bottom:16px;word-break:break-all}
+.env b{color:var(--ink);font-weight:500}
+
+.steps{margin:0 0 18px;padding:0;list-style:none}
+.step{display:flex;gap:10px;padding:11px 0;border-top:1px solid var(--rule);align-items:flex-start}
+.step:last-child{border-bottom:1px solid var(--rule)}
+.mark{flex:0 0 20px;height:20px;border-radius:50%;font-size:11px;line-height:20px;text-align:center;
+ background:var(--deep);color:var(--faint)}
+.step.run .mark{background:var(--ai);color:#fff}
+.step.ok  .mark{background:var(--ok);color:#fff}
+.step.ng  .mark{background:var(--shu);color:#fff}
+.step .body{flex:1;min-width:0}
+.step .t{font-size:12.5px;font-weight:500;margin:0 0 3px}
+.step .d{font-size:10.5px;line-height:1.7;color:var(--mute);margin:0;word-break:break-all}
+.step.ng .d{color:var(--shu)}
+
+.act{width:100%;padding:14px;border:0;border-radius:4px;background:var(--ai);color:#fff;
+ font-family:inherit;font-size:13px;cursor:pointer;margin-bottom:10px}
+.act.alt{background:none;border:1px solid var(--rule);color:var(--mute);font-size:11.5px;padding:10px}
+.act:disabled{opacity:.45}
+
+#cam{display:none;margin-bottom:14px;border-radius:5px;overflow:hidden;background:#000;position:relative}
+#cam.on{display:block}
+video{width:100%;display:block}
+.reticle{position:absolute;left:8%;right:8%;top:36%;height:28%;
+ border:2px solid rgba(255,255,255,.9);border-radius:3px;box-shadow:0 0 0 2000px rgba(0,0,0,.4)}
+.camfoot{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#141414;color:#fff;font-size:11px}
+.camfoot .t{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.85}
+.stop{border:1px solid rgba(255,255,255,.4);background:none;color:#fff;border-radius:3px;
+ padding:5px 12px;font-family:inherit;font-size:11px}
+
+.hits{margin:18px 0 0;padding:0;list-style:none}
+.hit{display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid var(--rule);font-size:12px}
+.hit .isbn{font-variant-numeric:tabular-nums}
+.hit .sec{margin-left:auto;font-size:10.5px;color:var(--faint)}
+.hit .eng{font-size:9.5px;color:var(--ai)}
+.summary{background:var(--deep);border-left:2px solid var(--ai);padding:11px 12px;
+ border-radius:0 2px 2px 0;font-size:11.5px;line-height:1.8;margin-top:16px}
+.note{font-size:10.5px;line-height:1.85;color:var(--faint);margin-top:20px}
+.note b{color:var(--mute);font-weight:500}
+</style>
+
+<div class="wrap">
+  <h1>iOS バーコード読み取り診断</h1>
+  <p class="sub">iPhone や iPad の Safari で開いてください。どこで失敗したかが段階ごとに分かります。本を3〜5冊読ませてみてください。</p>
+
+  <div class="env" id="env">環境を調べています…</div>
+
+  <ul class="steps" id="steps"></ul>
+
+  <button class="act" id="btnStart">診断をはじめる</button>
+
+  <div id="cam">
+    <div style="position:relative"><video id="video" playsinline muted autoplay></video><div class="reticle"></div></div>
+    <div class="camfoot"><span id="camMsg">…</span><span class="t" id="camT">0.0s</span><button class="stop" id="btnStop">やめる</button></div>
+  </div>
+
+  <ul class="hits" id="hits"></ul>
+  <div class="summary" id="summary" style="display:none"></div>
+
+  <button class="act alt" id="btnCopy" style="display:none">結果をコピーする</button>
+
+  <p class="note">
+    <b>この診断で分かること</b><br>
+    ① 端末に読み取り機能が内蔵されているか　② カメラを使えるか　③ ZXing を外部から読み込めるか　④ 実際に ISBN を読めるか　⑤ 何秒かかるか<br><br>
+    ③ が失敗する場合、Web アプリのままでは iPhone でバーコードが使えないため、アプリとして配布する構成に切り替える判断材料になります。
+  </p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const STEPS = [
+  ['env',   '端末の読み取り機能を調べる'],
+  ['cam',   'カメラを使えるか'],
+  ['lib',   'ZXing を読み込めるか'],
+  ['read',  '実際に ISBN を読む']
+];
+let state = {}, hits = [], engine = '', stream = null, scanning = false, t0 = 0, timerId = null;
+
+function renderSteps(){
+  $('steps').innerHTML = STEPS.map(([k,t]) => {
+    const s = state[k] || {};
+    const cls = s.ok === true ? 'ok' : s.ok === false ? 'ng' : s.run ? 'run' : '';
+    const mk  = s.ok === true ? '✓' : s.ok === false ? '×' : s.run ? '…' : '';
+    return `<li class="step ${cls}"><span class="mark">${mk}</span>
+      <span class="body"><p class="t">${t}</p><p class="d">${s.msg || '未実行'}</p></span></li>`;
+  }).join('');
+}
+function set(k, ok, msg, run){ state[k] = { ok, msg, run }; renderSteps(); }
+
+/* 環境表示 */
+(function(){
+  const ua = navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const m = ua.match(/OS (\d+)[_.](\d+)/);
+  $('env').innerHTML =
+    `<b>端末</b> ${isIOS ? 'iOS / iPadOS' : 'iOS ではありません'}` +
+    (m ? ` ${m[1]}.${m[2]}` : '') +
+    `<br><b>ブラウザ</b> ${/CriOS/.test(ua) ? 'Chrome (WebKit)' : /FxiOS/.test(ua) ? 'Firefox (WebKit)' : 'Safari 系'}` +
+    `<br><b>接続</b> ${location.protocol}` +
+    (location.protocol === 'file:' ? ' <span style="color:#B4472E">← file:// ではカメラを使えません。Claude の画面内で開いてください</span>' : '');
+  renderSteps();
+})();
+
+/* ── 診断 ─────────────────────────── */
+$('btnStart').onclick = async () => {
+  $('btnStart').disabled = true;
+  hits = []; $('hits').innerHTML = ''; $('summary').style.display = 'none';
+
+  // ① 内蔵の読み取り機能
+  set('env', null, '確認中…', true);
+  const native = ('BarcodeDetector' in window);
+  let nativeOk = false;
+  if (native){
+    try {
+      const fmts = await BarcodeDetector.getSupportedFormats();
+      nativeOk = fmts.includes('ean_13');
+      set('env', nativeOk, nativeOk ? `内蔵の読み取り機能あり（EAN-13 対応）` : `内蔵はあるが EAN-13 に非対応（${fmts.join(', ')}）`);
+    } catch(e){ set('env', false, '内蔵機能の確認に失敗：' + e.message); }
+  } else {
+    set('env', false, '内蔵の読み取り機能なし。ZXing を使います（iOS では通常こちら）');
+  }
+
+  // ② カメラ
+  set('cam', null, '許可を求めています…', true);
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } });
+    const tr = stream.getVideoTracks()[0], st = tr.getSettings ? tr.getSettings() : {};
+    set('cam', true, `使えます（${st.width || '?'}×${st.height || '?'}）`);
+  } catch(e){
+    set('cam', false, e.name + '：' + e.message);
+    $('btnStart').disabled = false; return;
+  }
+
+  // ③ ZXing
+  if (nativeOk){
+    set('lib', true, '内蔵機能を使うため読み込み不要');
+    engine = '内蔵';
+  } else {
+    set('lib', null, '読み込み中…', true);
+    const from = await loadZXing();
+    if (!from){
+      set('lib', false, 'どの配信元からも読み込めませんでした。Web アプリのままでは iPhone でバーコードを使えません');
+      stopCam(); $('btnStart').disabled = false; showSummary(); return;
+    }
+    set('lib', true, from + ' から読み込めました');
+    engine = 'ZXing';
+  }
+
+  // ④ 読み取り
+  set('read', null, 'カメラに ISBN の段（978〜）を向けてください', true);
+  startScan(nativeOk);
+};
+
+async function loadZXing(){
+  if (window.ZXing) return '読み込み済み';
+  const list = [
+    ['cdnjs',   'https://cdnjs.cloudflare.com/ajax/libs/zxing-library/0.18.6/umd/index.min.js'],
+    ['jsDelivr','https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.min.js'],
+    ['unpkg',   'https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js']
+  ];
+  for (const [name,url] of list){
+    const ok = await new Promise(res => {
+      const s = document.createElement('script');
+      s.src = url; s.onload = () => res(true); s.onerror = () => res(false);
+      setTimeout(() => res(false), 9000);
+      document.head.appendChild(s);
+    });
+    if (ok && window.ZXing) return name;
+  }
+  return null;
+}
+
+function validIsbn13(s){
+  if (!/^\d{13}$/.test(s)) return false;
+  if (!(s.startsWith('978') || s.startsWith('979'))) return false;
+  let sum = 0;
+  for (let i=0;i<12;i++) sum += (+s[i]) * (i % 2 ? 3 : 1);
+  return (10 - (sum % 10)) % 10 === +s[12];
+}
+
+async function startScan(nativeOk){
+  $('cam').classList.add('on');
+  const v = $('video');
+  v.srcObject = stream; await v.play();
+  scanning = true; t0 = performance.now();
+  $('camMsg').textContent = engine + ' で判定中';
+  timerId = setInterval(() => $('camT').textContent = ((performance.now()-t0)/1000).toFixed(1) + 's', 100);
+
+  let det = null, zx = null;
+  if (nativeOk) det = new BarcodeDetector({ formats:['ean_13'] });
+  else zx = new ZXing.BrowserMultiFormatReader();
+
+  const cv = document.createElement('canvas');
+  const loop = async () => {
+    if (!scanning) return;
+    let code = null;
+    try {
+      if (nativeOk){
+        for (const f of await det.detect(v)) if (validIsbn13(f.rawValue)) code = f.rawValue;
+      } else {
+        cv.width = v.videoWidth; cv.height = v.videoHeight;
+        if (cv.width){
+          cv.getContext('2d').drawImage(v, 0, 0);
+          try { const r = zx.decodeFromCanvas(cv); if (r && validIsbn13(r.getText())) code = r.getText(); } catch(e){}
+        }
+      }
+    } catch(e){}
+    if (code){
+      const sec = +((performance.now()-t0)/1000).toFixed(1);
+      if (!hits.some(h => h.isbn === code)){
+        hits.push({ isbn:code, sec, engine });
+        renderHits();
+        set('read', true, `${hits.length}冊 読めました。続けて次の本をどうぞ`);
+        if (navigator.vibrate) navigator.vibrate(60);
+      }
+      t0 = performance.now();
+    }
+    setTimeout(loop, nativeOk ? 220 : 400);
+  };
+  loop();
+}
+
+function renderHits(){
+  $('hits').innerHTML = hits.map(h =>
+    `<li class="hit"><span class="isbn">${h.isbn}</span><span class="eng">${h.engine}</span><span class="sec">${h.sec}秒</span></li>`
+  ).join('');
+}
+
+function stopCam(){
+  scanning = false; clearInterval(timerId);
+  if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  $('cam').classList.remove('on');
+}
+
+$('btnStop').onclick = () => {
+  stopCam();
+  if (!hits.length) set('read', false, '1冊も読めませんでした');
+  showSummary();
+  $('btnStart').disabled = false;
+};
+
+function showSummary(){
+  const secs = hits.map(h => h.sec);
+  const avg = secs.length ? (secs.reduce((a,b)=>a+b,0)/secs.length).toFixed(1) : '–';
+  $('summary').style.display = 'block';
+  $('summary').innerHTML =
+    `<b>結果</b><br>読み取り方式：${engine || '判定前'}<br>` +
+    `読めた冊数：${hits.length}<br>平均の秒数：${avg}<br>` +
+    (hits.length === 0 ? '<br>iPhone では Web アプリのままバーコードを使えない可能性があります。'
+     : avg > 3 ? '<br>読めますが遅めです。実用には調整が要ります。'
+     : '<br>実用的な速さです。Web アプリのまま進められます。');
+  $('btnCopy').style.display = 'block';
+}
+
+$('btnCopy').onclick = async () => {
+  const txt = [
+    'iOS バーコード診断',
+    $('env').innerText,
+    ...STEPS.map(([k,t]) => `${t}：${state[k]?.ok === true ? 'OK' : state[k]?.ok === false ? 'NG' : '-'} / ${state[k]?.msg || ''}`),
+    `読めた：${hits.length}冊`,
+    ...hits.map(h => `${h.isbn} ${h.sec}秒 ${h.engine}`)
+  ].join('\n');
+  try { await navigator.clipboard.writeText(txt); $('btnCopy').textContent = 'コピーしました'; }
+  catch(e){ prompt('この文字列をコピーしてください', txt); }
+};
+
+renderSteps();
+</script>
