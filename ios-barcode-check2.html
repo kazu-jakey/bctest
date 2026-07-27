@@ -1,0 +1,288 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>iOS バーコード診断 v2</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500&family=Noto+Serif+JP:wght@400;600&display=swap');
+:root{--paper:#F4EFE6;--deep:#EBE2D3;--field:#FBF8F1;--ink:#1B2B3A;--mute:#6E655A;
+ --faint:#9C9184;--ai:#24486E;--shu:#B4472E;--ok:#3E6B4F;--rule:rgba(27,43,58,.14)}
+*{box-sizing:border-box}
+body{margin:0;padding:18px 14px 50px;background:var(--paper);color:var(--ink);
+ font-family:"Noto Sans JP",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:460px;margin:0 auto}
+h1{font-family:"Noto Serif JP",serif;font-size:17px;margin:0 0 4px;font-weight:600}
+.sub{font-size:11.5px;color:var(--mute);line-height:1.75;margin:0 0 16px}
+.pick{display:flex;gap:7px;margin-bottom:14px}
+.pick button{flex:1;padding:10px 6px;border:1px solid var(--rule);background:var(--field);
+ border-radius:3px;font-family:inherit;font-size:11.5px;color:var(--mute);cursor:pointer;line-height:1.4}
+.pick button.on{border-color:var(--ai);border-width:1.5px;background:#fff;color:var(--ai);font-weight:500}
+.pick button small{display:block;font-size:9px;margin-top:3px;opacity:.8}
+.act{width:100%;padding:14px;border:0;border-radius:4px;background:var(--ai);color:#fff;
+ font-family:inherit;font-size:13px;cursor:pointer;margin-bottom:9px}
+.act.alt{background:none;border:1px solid var(--rule);color:var(--mute);font-size:11.5px;padding:10px}
+.act:disabled{opacity:.45}
+#cam{display:none;margin-bottom:14px;border-radius:5px;overflow:hidden;background:#000;position:relative}
+#cam.on{display:block}
+video{width:100%;display:block}
+.reticle{position:absolute;left:6%;right:6%;top:37%;height:26%;
+ border:2px solid rgba(255,255,255,.9);border-radius:3px;box-shadow:0 0 0 2000px rgba(0,0,0,.42)}
+.reticle::after{content:"この枠にISBNの段（978〜）";position:absolute;left:0;right:0;bottom:-24px;
+ text-align:center;color:#fff;font-size:10px}
+.camfoot{display:flex;align-items:center;gap:9px;padding:10px 12px;background:#141414;color:#fff;font-size:10.5px}
+.camfoot .t{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.85}
+.stop{border:1px solid rgba(255,255,255,.4);background:none;color:#fff;border-radius:3px;
+ padding:5px 11px;font-family:inherit;font-size:11px}
+.log{background:var(--field);border:1px solid var(--rule);border-radius:3px;padding:10px 12px;
+ font-size:10.5px;line-height:1.8;color:var(--mute);margin-bottom:14px;max-height:190px;overflow:auto;
+ word-break:break-all;white-space:pre-wrap}
+.log b{color:var(--ink);font-weight:500}
+.log .ng{color:var(--shu)}
+.log .ok{color:var(--ok)}
+.hits{margin:0 0 14px;padding:0;list-style:none}
+.hit{display:flex;gap:9px;align-items:baseline;padding:9px 0;border-top:1px solid var(--rule);font-size:12px}
+.hit .isbn{font-variant-numeric:tabular-nums}
+.hit .sec{margin-left:auto;font-size:10.5px;color:var(--faint)}
+.hit .eng{font-size:9.5px;color:var(--ai)}
+.note{font-size:10.5px;line-height:1.85;color:var(--faint);margin-top:18px}
+.note b{color:var(--mute);font-weight:500}
+</style>
+
+<div class="wrap">
+  <h1>iOS バーコード診断 v2</h1>
+  <p class="sub">前回は読み取り部分に不備がありました。今回は<b>枠の中だけを解析</b>し、EAN-13に絞り、2つの方式を選べます。</p>
+
+  <div class="pick" id="pick">
+    <button data-eng="wasm" class="on">zxing-wasm<small>新しい方式</small></button>
+    <button data-eng="zxing">ZXing<small>従来の方式</small></button>
+  </div>
+
+  <button class="act" id="btnStart">カメラで読む</button>
+  <button class="act alt" id="btnShot">写真を1枚撮って解析する</button>
+  <input type="file" id="file" accept="image/*" capture="environment" hidden>
+
+  <div id="cam">
+    <div style="position:relative"><video id="video" playsinline muted autoplay></video><div class="reticle"></div></div>
+    <div class="camfoot"><span id="camMsg">…</span><span class="t" id="camT">0.0s</span><button class="stop" id="btnStop">やめる</button></div>
+  </div>
+
+  <div class="log" id="log">まだ動かしていません。</div>
+  <ul class="hits" id="hits"></ul>
+  <button class="act alt" id="btnCopy" style="display:none">結果をコピーする</button>
+
+  <p class="note">
+    <b>前回からの変更</b><br>
+    ① 画面全体ではなく<b>枠の中だけ</b>を切り出して解析（バーコードが画像に占める割合が上がる）　② EAN-13 のみに限定し、粘り強く探す設定を有効化　③ 解析の失敗理由をすべて表示　④ 写真1枚だけを解析する経路も用意（動画が重いのか、解析自体が無理なのかを切り分けるため）
+  </p>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+let engine = 'wasm', stream = null, scanning = false, t0 = 0, timerId = null;
+let hits = [], attempts = 0, lastErr = '', logs = [];
+
+function log(msg, cls){
+  logs.push(msg);
+  $('log').innerHTML = logs.slice(-40).map(m => m).join('\n');
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+$('pick').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  engine = b.dataset.eng;
+  [...$('pick').children].forEach(x => x.classList.toggle('on', x === b));
+  log('方式を ' + (engine === 'wasm' ? 'zxing-wasm' : 'ZXing') + ' に切り替えました');
+};
+
+/* ── 読み取り実装 ───────────────────── */
+let wasmDetector = null, zxingReady = false;
+
+async function initWasm(){
+  if (wasmDetector) return true;
+  const urls = [
+    'https://esm.sh/barcode-detector@2.3.1/pure',
+    'https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.js'
+  ];
+  for (const u of urls){
+    try {
+      const mod = await import(u);
+      const BD = mod.BarcodeDetector || mod.default;
+      wasmDetector = new BD({ formats:['ean_13'] });
+      log('<b>zxing-wasm を読み込みました</b>（' + (u.includes('esm.sh') ? 'esm.sh' : 'jsDelivr') + '）');
+      return true;
+    } catch(e){ log('<span class="ng">読み込み失敗 ' + u.split('/')[2] + '：' + e.message + '</span>'); }
+  }
+  return false;
+}
+
+async function initZxing(){
+  if (zxingReady) return true;
+  const urls = [
+    'https://cdn.jsdelivr.net/npm/@zxing/library@0.18.6/umd/index.min.js',
+    'https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js'
+  ];
+  for (const u of urls){
+    const ok = await new Promise(res => {
+      const s = document.createElement('script');
+      s.src = u; s.onload = () => res(true); s.onerror = () => res(false);
+      setTimeout(() => res(false), 9000);
+      document.head.appendChild(s);
+    });
+    if (ok && window.ZXing){
+      // 存在する API を確認しておく（前回はここが原因の可能性）
+      const has = ['MultiFormatReader','HTMLCanvasElementLuminanceSource','BinaryBitmap','HybridBinarizer']
+        .filter(k => !(k in window.ZXing));
+      if (has.length){ log('<span class="ng">ZXing に必要な部品がありません：' + has.join(', ') + '</span>'); return false; }
+      zxingReady = true;
+      log('<b>ZXing を読み込みました</b>');
+      return true;
+    }
+  }
+  log('<span class="ng">ZXing を読み込めませんでした</span>');
+  return false;
+}
+
+function zxingDecode(canvas){
+  const Z = window.ZXing;
+  const hints = new Map();
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13]);
+  hints.set(Z.DecodeHintType.TRY_HARDER, true);
+  const reader = new Z.MultiFormatReader();
+  reader.setHints(hints);
+  const src = new Z.HTMLCanvasElementLuminanceSource(canvas);
+  const bmp = new Z.BinaryBitmap(new Z.HybridBinarizer(src));
+  return reader.decode(bmp).getText();
+}
+
+async function decode(canvas){
+  attempts++;
+  if (engine === 'wasm'){
+    const found = await wasmDetector.detect(canvas);
+    for (const f of found) if (validIsbn13(f.rawValue)) return f.rawValue;
+    return null;
+  } else {
+    try { const t = zxingDecode(canvas); return validIsbn13(t) ? t : null; }
+    catch(e){ lastErr = e.name || String(e); return null; }
+  }
+}
+
+function validIsbn13(s){
+  if (!/^\d{13}$/.test(s)) return false;
+  if (!(s.startsWith('978') || s.startsWith('979'))) return false;
+  let sum = 0;
+  for (let i=0;i<12;i++) sum += (+s[i]) * (i % 2 ? 3 : 1);
+  return (10 - (sum % 10)) % 10 === +s[12];
+}
+
+/* 枠の中だけを切り出し、拡大してから解析する */
+function cropReticle(video){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const sx = vw * 0.06, sw = vw * 0.88;
+  const sy = vh * 0.37, sh = vh * 0.26;
+  const c = document.createElement('canvas');
+  c.width = Math.min(1400, sw * 1.4) | 0;
+  c.height = (c.width * sh / sw) | 0;
+  const ctx = c.getContext('2d', { willReadFrequently:true });
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+
+/* ── カメラ ─────────────────────────── */
+$('btnStart').onclick = async () => {
+  $('btnStart').disabled = true;
+  hits = []; attempts = 0; $('hits').innerHTML = '';
+  logs = []; log('方式：' + (engine === 'wasm' ? 'zxing-wasm' : 'ZXing'));
+
+  const ready = engine === 'wasm' ? await initWasm() : await initZxing();
+  if (!ready){ log('<span class="ng">読み取り部品を用意できませんでした</span>'); $('btnStart').disabled = false; return; }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } });
+  } catch(e){ log('<span class="ng">カメラ：' + e.name + '</span>'); $('btnStart').disabled = false; return; }
+
+  const v = $('video'); v.srcObject = stream; await v.play();
+  $('cam').classList.add('on');
+  scanning = true; t0 = performance.now();
+  timerId = setInterval(() => {
+    $('camT').textContent = ((performance.now()-t0)/1000).toFixed(1) + 's';
+    $('camMsg').textContent = attempts + '回 解析' + (lastErr ? '（' + lastErr + '）' : '');
+  }, 200);
+
+  const loop = async () => {
+    if (!scanning) return;
+    if ($('video').videoWidth){
+      const c = cropReticle($('video'));
+      let code = null;
+      try { code = await decode(c); } catch(e){ lastErr = e.message; }
+      if (code && !hits.some(h => h.isbn === code)){
+        const sec = +((performance.now()-t0)/1000).toFixed(1);
+        hits.push({ isbn:code, sec, eng:engine });
+        renderHits();
+        log('<span class="ok"><b>読めました ' + code + '</b>（' + sec + '秒 / ' + attempts + '回目）</span>');
+        if (navigator.vibrate) navigator.vibrate(60);
+        t0 = performance.now();
+      }
+    }
+    setTimeout(loop, 150);
+  };
+  loop();
+};
+
+$('btnStop').onclick = () => {
+  scanning = false; clearInterval(timerId);
+  if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  $('cam').classList.remove('on');
+  $('btnStart').disabled = false;
+  log('<b>停止しました</b> ─ 解析 ' + attempts + '回 / 読めた ' + hits.length + '冊'
+      + (lastErr ? ' / 最後の失敗：' + lastErr : ''));
+  $('btnCopy').style.display = 'block';
+};
+
+/* ── 写真1枚だけ ────────────────────── */
+$('btnShot').onclick = () => $('file').click();
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  e.target.value = '';
+  logs = []; log('写真1枚を解析します（方式：' + (engine === 'wasm' ? 'zxing-wasm' : 'ZXing') + '）');
+  const ready = engine === 'wasm' ? await initWasm() : await initZxing();
+  if (!ready) return;
+
+  const img = new Image();
+  img.onload = async () => {
+    log('画像 ' + img.width + '×' + img.height);
+    // 全体と、中央の帯だけの2通りを試す
+    for (const [name, box] of [['全体',[0,0,1,1]], ['中央の帯',[0.05,0.30,0.90,0.40]]]){
+      const c = document.createElement('canvas');
+      const sx = img.width*box[0], sy = img.height*box[1], sw = img.width*box[2], sh = img.height*box[3];
+      c.width = Math.min(1600, sw) | 0; c.height = (c.width * sh / sw) | 0;
+      c.getContext('2d', { willReadFrequently:true }).drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      const st = performance.now();
+      let code = null;
+      try { code = await decode(c); } catch(err){ lastErr = err.message; }
+      const ms = (performance.now()-st).toFixed(0);
+      if (code){
+        log('<span class="ok"><b>' + name + 'で読めました ' + code + '</b>（' + ms + 'ms）</span>');
+        hits.push({ isbn:code, sec:+(ms/1000).toFixed(2), eng:engine + '/写真' });
+        renderHits();
+        break;
+      } else {
+        log('<span class="ng">' + name + 'では読めず（' + ms + 'ms' + (lastErr ? ' / ' + lastErr : '') + '）</span>');
+      }
+    }
+    $('btnCopy').style.display = 'block';
+  };
+  img.src = URL.createObjectURL(f);
+};
+
+function renderHits(){
+  $('hits').innerHTML = hits.map(h =>
+    `<li class="hit"><span class="isbn">${h.isbn}</span><span class="eng">${h.eng}</span><span class="sec">${h.sec}秒</span></li>`
+  ).join('');
+}
+
+$('btnCopy').onclick = async () => {
+  const txt = ['iOS バーコード診断 v2', navigator.userAgent, '',
+    ...logs.map(l => l.replace(/<[^>]+>/g,'')), '',
+    `読めた：${hits.length}冊`, ...hits.map(h => `${h.isbn} ${h.sec}秒 ${h.eng}`)].join('\n');
+  try { await navigator.clipboard.writeText(txt); $('btnCopy').textContent = 'コピーしました'; }
+  catch(e){ prompt('コピーしてください', txt); }
+};
+</script>
