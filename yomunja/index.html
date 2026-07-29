@@ -26,6 +26,7 @@ body{
   padding-bottom:calc(40px + env(safe-area-inset-bottom));
 }
 button,input,textarea,select{font-family:inherit;color:inherit}
+img{max-width:100%}
 
 /* ── アプリバー ─────────────────────── */
 .appbar{
@@ -52,6 +53,7 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 /* ── 本 ─────────────────────────────── */
 .shelfrow{display:flex;align-items:flex-start;gap:11px;margin-bottom:0}
 .shelfrow > *{flex:1 1 0;min-width:0}
+.shelfrow > * > .bk{height:auto;aspect-ratio:2/2.95}
 .shelfrow .filler{visibility:hidden}
 .plank{height:6px;margin:10px -3px 20px;border-radius:1px;
   background:linear-gradient(180deg,var(--wood-1),var(--wood-2));
@@ -96,7 +98,10 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 
 /* ── 読みかけ ───────────────────────── */
 .now{display:flex;gap:15px;margin-bottom:22px}
-.now .bkw{flex:0 0 92px}
+.bkw{display:block;flex:0 0 auto}
+.bkw > .bk{width:100%;height:auto}
+.now .bkw{flex:0 0 92px;width:92px}
+.now .bkw > .bk{height:136px}
 .now-meta{flex:1;min-width:0}
 .now-kicker{font-size:9.5px;letter-spacing:.14em;color:var(--shu);margin:0 0 5px}
 .now-meta h3{font-family:"Noto Serif JP",serif;font-size:14.5px;margin:0 0 3px;line-height:1.45}
@@ -104,7 +109,8 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 .now-pos{font-size:10.5px;color:var(--faint);margin:0 0 12px;font-variant-numeric:tabular-nums}
 .mini{display:flex;gap:13px;align-items:center;width:100%;background:none;border:0;
   padding:11px 0;cursor:pointer;text-align:left;border-top:1px solid var(--rule)}
-.mini .bkw{flex:0 0 44px}
+.mini .bkw{flex:0 0 44px;width:44px}
+.mini .bkw > .bk{height:65px}
 .mini h4{font-family:"Noto Serif JP",serif;font-size:12.5px;margin:0 0 3px;font-weight:600}
 .mini p{margin:0;font-size:10px;color:var(--faint)}
 
@@ -152,358 +158,10 @@ img.wordmark{height:19px;margin-right:auto;display:block}
 .shead .done{border:0;background:none;color:var(--ai);font-size:12.5px;cursor:pointer;padding:6px 8px}
 
 
-/* ── バーコードと書誌 ───────────────── */
-/*  検証で確定した構成：
-      読み取り … 端末内蔵（Android等）→ zxing-wasm（iOS）
-      枠の中だけを切り出し、EAN-13 に限定して解析する
-      書誌 …… openBD の後継API（ブラウザから直接呼べる唯一の経路）
-      整形 …… 図書館の典拠形式をそのまま出さない                     */
-let scStream = null, scRunning = false, scDetector = null, scNative = false;
-
-async function initDetector(){
-  if (scDetector) return true;
-  if ('BarcodeDetector' in window){
-    try {
-      const f = await BarcodeDetector.getSupportedFormats();
-      if (f.includes('ean_13')){
-        scDetector = new BarcodeDetector({ formats:['ean_13'] });
-        scNative = true;
-        return true;
-      }
-    } catch(e){}
-  }
-  for (const u of ['https://esm.sh/barcode-detector@2.3.1/pure',
-                   'https://cdn.jsdelivr.net/npm/barcode-detector@2.3.1/dist/es/pure.js']){
-    try {
-      const mod = await import(u);
-      const BD = mod.BarcodeDetector || mod.default;
-      scDetector = new BD({ formats:['ean_13'] });
-      scNative = false;
-      return true;
-    } catch(e){}
-  }
-  return false;
-}
-
-function validIsbn13(v){
-  if (!/^\d{13}$/.test(v)) return false;
-  if (!(v.startsWith('978') || v.startsWith('979'))) return false;
-  let sum = 0;
-  for (let i=0;i<12;i++) sum += (+v[i]) * (i % 2 ? 3 : 1);
-  return (10 - (sum % 10)) % 10 === +v[12];
-}
-
-$('aScan').onclick = async () => {
-  $('scMsg').textContent = '読み取りを用意しています…';
-  $('scT').textContent = '';
-  open('scScan');
-  if (!await initDetector()){
-    close('scScan');
-    setScanMsg('この端末では読み取りを使えませんでした。書名を手で入れてください。', true);
-    return;
-  }
-  try {
-    scStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } });
-  } catch(e){
-    close('scScan');
-    setScanMsg('カメラを使えませんでした（' + e.name + '）。書名を手で入れてください。', true);
-    return;
-  }
-  const v = $('scVideo');
-  v.srcObject = scStream; await v.play();
-  scRunning = true;
-  $('scMsg').textContent = '枠に入れてください';
-  const t0 = performance.now();
-  const iv = setInterval(() => { if (scRunning) $('scT').textContent = ((performance.now()-t0)/1000).toFixed(1) + 's'; }, 200);
-
-  const loop = async () => {
-    if (!scRunning){ clearInterval(iv); return; }
-    const vd = $('scVideo');
-    if (vd.videoWidth){
-      try {
-        const c = document.createElement('canvas');
-        const r = $('scReticle').getBoundingClientRect();
-        const vr = vd.getBoundingClientRect();
-        const k = Math.max(vr.width/vd.videoWidth, vr.height/vd.videoHeight);
-        const ox = vr.left + (vr.width - vd.videoWidth*k)/2;
-        const oy = vr.top  + (vr.height - vd.videoHeight*k)/2;
-        const sx = (r.left - ox)/k, sy = (r.top - oy)/k;
-        const sw = r.width/k,       sh = r.height/k;
-        c.width = Math.min(1400, sw*1.4)|0;
-        c.height = (c.width*sh/sw)|0;
-        c.getContext('2d',{willReadFrequently:true}).drawImage(vd, sx, sy, sw, sh, 0, 0, c.width, c.height);
-        for (const f of await scDetector.detect(c)){
-          if (validIsbn13(f.rawValue)){
-            stopScan();
-            if (navigator.vibrate) navigator.vibrate(60);
-            await lookupIsbn(f.rawValue);
-            return;
-          }
-        }
-      } catch(e){}
-    }
-    setTimeout(loop, scNative ? 200 : 150);
-  };
-  loop();
-};
-
-function stopScan(){
-  scRunning = false;
-  if (scStream){ scStream.getTracks().forEach(t => t.stop()); scStream = null; }
-  close('scScan');
-}
-$('scScan').querySelector('[data-close]').addEventListener('click', stopScan);
-
-function setScanMsg(m, ng){
-  const el = $('aScanMsg');
-  el.textContent = m;
-  el.className = 'scanmsg' + (ng ? ' ng' : '');
-}
-
-/* 図書館の典拠形式をそのまま出さない（実データで検証済み） */
-function cleanTitle(t){
-  if (!t) return { main:'', sub:'' };
-  const parts = t.split(' : ');
-  return { main: parts[0].split(' = ')[0].trim(), sub: parts.slice(1).join(' : ').trim() };
-}
-function cleanAuthor(a){
-  if (!a) return '';
-  return a.split(/[\s\/／]+/).filter(Boolean).map(tok => {
-    const ps = tok.split(',').map(x => x.trim()).filter(x => x && !/^\d{4}-?\d{0,4}$/.test(x));
-    if (!ps.length) return '';
-    if (!/^[A-Za-z]/.test(ps[0])) return ps.join('');
-    return ps.slice().reverse().join(' ').replace(/([a-z])([A-Z])/g, '$1 $2');
-  }).filter(Boolean).join('、');
-}
-
-async function lookupIsbn(isbn){
-  setScanMsg('書誌を調べています… ' + isbn);
-  try {
-    const r = await fetch('https://api.openbd.jp/v1/get?isbn=' + isbn);
-    const j = await r.json();
-    const sm = j && j[0] && j[0].summary;
-    if (!sm){
-      setScanMsg(isbn + ' の書誌が見つかりませんでした。書名を手で入れてください。', true);
-      $('aTitle').focus();
-      return;
-    }
-    const t = cleanTitle(sm.title);
-    $('aTitle').value  = t.main;
-    $('aSub').value    = t.sub;
-    $('aAuthor').value = cleanAuthor(sm.author);
-    scanned = { isbn, publisher: sm.publisher || '', subtitle: t.sub, pubdate: sm.pubdate || '' };
-    setScanMsg('読み取りました' + (sm.publisher ? '（' + sm.publisher + '）' : '') + (t.sub ? '／' + t.sub : ''));
-  } catch(e){
-    setScanMsg('書誌を取得できませんでした（' + e.message + '）。書名を手で入れてください。', true);
-  }
-}
-let scanned = null;
-
-
-
-/* ── 書影の取得 ─────────────────────── */
-/*  ISBN から画像の場所を組み立てて、実在するかを確かめる。
-    実測では 8冊中6冊（75%）取得できた。取れない本は生成カバーになる。
-    ※ 将来こうして公開する段階では、正規のAPI経由に切り替える。
-      取得手段はこの関数の中だけに閉じてあるので、差し替えは容易。   */
-function jacketUrl(isbn){
-  if (!isbn || isbn.length !== 13) return null;
-  return 'https://thumbnail.image.rakuten.co.jp/@0_mall/book/cabinet/'
-       + isbn.slice(-4) + '/' + isbn + '.jpg?_ex=400x400';
-}
-
-function imageExists(url){
-  return new Promise(res => {
-    if (!url) return res(false);
-    const im = new Image();
-    const to = setTimeout(() => { im.src = ''; res(false); }, 6000);
-    im.onload  = () => { clearTimeout(to); res(im.naturalWidth > 40); };
-    im.onerror = () => { clearTimeout(to); res(false); };
-    im.src = url;
-  });
-}
-
-/* 登録済みの本のうち、まだ書影を調べていないものを順に確かめる */
-async function fillJackets(){
-  const todo = db.books.filter(b => b.isbn && !b.jacket && !b.jacketTried);
-  if (!todo.length) return;
-  let got = 0;
-  for (const b of todo){
-    const u = jacketUrl(b.isbn);
-    b.jacketTried = true;
-    if (await imageExists(u)){ b.jacket = u; got++; }
-  }
-  await save();
-  render();
-  if (got) toast(got + '冊の表紙が見つかりました');
-}
-
-/* ── 表紙を撮る ─────────────────────── */
-/*  検証で決めた方式：
-      枠ガイドで撮らせる（四隅の自動検出はしない）
-      明るさの伸ばしと色かぶり補正だけかける
-      反射が強ければ知らせる（直そうとはしない）
-      仕上げは 600×900 の JPEG                                   */
-let shStream = null, shFrame = null, shCrop = null, shBaseW = 0, shTarget = null;
-
-function openShot(bookId){
-  shTarget = bookId;
-  open('scShot');
-  navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1920 } } })
-    .then(async st => {
-      shStream = st;
-      const v = $('shVideo'); v.srcObject = st; await v.play();
-      sizeGuide();
-      setTimeout(sizeGuide, 300);
-    })
-    .catch(e => {
-      close('scShot');
-      toast('カメラを使えませんでした');
-    });
-}
-function sizeGuide(){
-  const g = $('shGuide');
-  const W = window.innerWidth, H = window.innerHeight;
-  /* 上の見出しと下の操作帯を避けた範囲に収める */
-  const avail = H - 150 - 120;
-  let w = W * 0.74, h = w * 1.475;
-  if (h > avail){ h = avail; w = h / 1.475; }
-  g.style.width = w + 'px'; g.style.height = h + 'px';
-}
-window.addEventListener('resize', () => { if (shStream) sizeGuide(); });
-
-function stopShot(){
-  if (shStream){ shStream.getTracks().forEach(t => t.stop()); shStream = null; }
-  close('scShot');
-}
-$('scShot').querySelector('[data-close]').addEventListener('click', stopShot);
-
-$('shTake').onclick = () => {
-  const v = $('shVideo'), g = $('shGuide');
-  const vw = v.videoWidth, vh = v.videoHeight;
-  if (!vw) return;
-  const f = document.createElement('canvas');
-  f.width = vw; f.height = vh;
-  f.getContext('2d').drawImage(v, 0, 0);
-  /* 映像は画面いっぱいに引き伸ばして表示（cover）しているので、
-     はみ出しぶんを差し引いて枠の位置を映像の座標に直す */
-  const vr = v.getBoundingClientRect(), gr = g.getBoundingClientRect();
-  const sc = Math.max(vr.width / vw, vr.height / vh);
-  const ox = vr.left + (vr.width - vw*sc)/2, oy = vr.top + (vr.height - vh*sc)/2;
-  stopShot();
-  setFrame(f, (gr.left + gr.width/2 - ox)/sc, (gr.top + gr.height/2 - oy)/sc, gr.width/sc);
-};
-
-$('shPick').onclick = () => $('shFile').click();
-$('shFile').onchange = e => {
-  const fl = e.target.files[0]; if (!fl) return;
-  e.target.value = '';
-  const img = new Image();
-  img.onload = () => {
-    const f = document.createElement('canvas');
-    f.width = img.width; f.height = img.height;
-    f.getContext('2d').drawImage(img, 0, 0);
-    stopShot();
-    let w = img.width * 0.92;
-    if (w * 1.475 > img.height * 0.96) w = img.height * 0.96 / 1.475;
-    setFrame(f, img.width/2, img.height/2, w);
-  };
-  img.src = URL.createObjectURL(fl);
-};
-
-function setFrame(f, cx, cy, w){
-  shFrame = f; shCrop = { cx, cy, w }; shBaseW = w;
-  $('cpZoom').value = 100;
-  open('scCrop');
-  updateCrop();
-}
-function clampCrop(){
-  const maxW = Math.min(shFrame.width, shFrame.height / 1.475);
-  shCrop.w = Math.max(60, Math.min(shCrop.w, maxW));
-  const hw = shCrop.w/2, hh = shCrop.w*1.475/2;
-  shCrop.cx = Math.max(hw, Math.min(shCrop.cx, shFrame.width - hw));
-  shCrop.cy = Math.max(hh, Math.min(shCrop.cy, shFrame.height - hh));
-}
-function updateCrop(){
-  clampCrop();
-  const c = $('cpPrev'); c.width = 600; c.height = 885;
-  const ctx = c.getContext('2d', { willReadFrequently:true });
-  ctx.drawImage(shFrame, shCrop.cx - shCrop.w/2, shCrop.cy - shCrop.w*1.475/2,
-                shCrop.w, shCrop.w*1.475, 0, 0, 600, 885);
-  correct(ctx, 600, 885);
-}
-$('cpZoom').oninput = () => { if (shFrame){ shCrop.w = shBaseW * (100 / +$('cpZoom').value); updateCrop(); } };
-(function(){
-  const el = $('cpPrev'); let last = null;
-  const conv = d => d * (shCrop.w / el.getBoundingClientRect().width);
-  el.addEventListener('pointerdown', e => { if (!shFrame) return; last = {x:e.clientX,y:e.clientY}; el.setPointerCapture(e.pointerId); });
-  el.addEventListener('pointermove', e => {
-    if (!last || !shFrame) return;
-    shCrop.cx -= conv(e.clientX - last.x);
-    shCrop.cy -= conv(e.clientY - last.y);
-    last = {x:e.clientX,y:e.clientY};
-    updateCrop();
-  });
-  ['pointerup','pointercancel'].forEach(k => el.addEventListener(k, () => last = null));
-})();
-
-/* 明るさの伸ばし・色かぶり補正・わずかな減彩 */
-function correct(ctx, W, H){
-  const im = ctx.getImageData(0,0,W,H), d = im.data, n = d.length/4;
-  const hist = new Uint32Array(256);
-  let rs=0, gs=0, bs=0, blown=0;
-  for (let i=0;i<d.length;i+=4){
-    const l = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
-    hist[l]++; rs+=d[i]; gs+=d[i+1]; bs+=d[i+2];
-    if (l > 250) blown++;
-  }
-  const cut = n*0.01;
-  let lo=0, hi=255, acc=0;
-  for (let i=0;i<256;i++){ acc+=hist[i]; if (acc>cut){ lo=i; break; } }
-  acc=0;
-  for (let i=255;i>=0;i--){ acc+=hist[i]; if (acc>cut){ hi=i; break; } }
-  if (hi-lo < 20){ lo=0; hi=255; }
-  const ra=rs/n, ga=gs/n, ba=bs/n, gray=(ra+ga+ba)/3, wb=0.8;
-  const kr=1+((gray/ra)-1)*wb, kg=1+((gray/ga)-1)*wb, kb=1+((gray/ba)-1)*wb;
-  const span = Math.max(1, hi-lo), sat = 0.92;
-  for (let i=0;i<d.length;i+=4){
-    for (let k=0;k<3;k++){
-      const v = d[i+k] * (k===0?kr:k===1?kg:kb);
-      const t = (v-lo)/span*255;
-      d[i+k] = t<0?0:t>255?255:t;
-    }
-    const l = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
-    for (let k=0;k<3;k++){
-      const v = l + (d[i+k]-l)*sat;
-      d[i+k] = v<0?0:v>255?255:v;
-    }
-  }
-  ctx.putImageData(im,0,0);
-  const pct = blown/n*100;
-  const el = $('cpDiag');
-  el.textContent = pct > 3
-    ? `光が反射しています（白飛び ${pct.toFixed(1)}%）。角度を変えて撮り直すと良くなります。`
-    : '明るさと色みを整えました。';
-  el.className = 'diagline' + (pct > 3 ? ' ng' : '');
-}
-
-async function saveCover(){
-  if (!shFrame || !shTarget) return;
-  const b = bookOf(shTarget); if (!b) return;
-  b.cover = $('cpPrev').toDataURL('image/jpeg', 0.78);
-  await save();
-  shFrame = null;
-  close('scCrop');
-  if ($('scBook').classList.contains('on')) openBook(shTarget); else render();
-  toast('表紙にしました');
-}
-$('cpSave').onclick  = saveCover;
-$('cpSave2').onclick = saveCover;
-$('cpRetry').onclick = () => { close('scCrop'); openShot(shTarget); };
-
 /* ── 本の詳細 ───────────────────────── */
 .dhead{display:flex;gap:15px;padding:20px 16px 18px}
-.dhead .bkw{flex:0 0 86px}
+.dhead .bkw{flex:0 0 86px;width:86px}
+.dhead .bkw > .bk{height:127px}
 .dhead .m{flex:1;min-width:0}
 .dhead h3{font-family:"Noto Serif JP",serif;font-size:15px;margin:0 0 4px;line-height:1.45}
 .dhead .sub2{font-size:11.5px;color:var(--mute);margin:0 0 6px;line-height:1.6}
@@ -526,7 +184,8 @@ $('cpRetry').onclick = () => { close('scCrop'); openShot(shTarget); };
 
 /* ── タイマー ───────────────────────── */
 .timer{text-align:center;padding:30px 20px 24px}
-.timer .bkw{width:70px;margin:0 auto 16px}
+.timer .bkw{display:block;width:70px;margin:0 auto 16px}
+.timer .bkw > .bk{height:103px}
 .timer h3{font-family:"Noto Serif JP",serif;font-size:13.5px;margin:0 0 3px}
 .timer .by{font-size:10.5px;color:var(--mute);margin:0 0 26px}
 .clock{font-family:"Noto Serif JP",serif;font-size:46px;letter-spacing:.03em;
@@ -545,7 +204,8 @@ $('cpRetry').onclick = () => { close('scCrop'); openShot(shTarget); };
 .rescount{font-size:9.5px;color:var(--faint);letter-spacing:.08em;margin:0 16px 8px}
 .hit{display:flex;gap:12px;padding:13px 16px;border-top:1px solid var(--rule);
   width:100%;background:none;border-left:0;border-right:0;border-bottom:0;cursor:pointer;text-align:left}
-.hit .bkw{flex:0 0 36px}
+.hit .bkw{flex:0 0 36px;width:36px}
+.hit .bkw > .bk{height:53px}
 .hit .m{flex:1;min-width:0}
 .hit .src{font-size:9.5px;color:var(--faint);margin:0 0 5px;letter-spacing:.05em}
 .hit .frag{margin:0;font-size:12px;line-height:1.75;font-family:"Klee One",serif}
